@@ -40,12 +40,15 @@ def is_startup_enabled():
 def set_startup_enabled(enable):
     key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_REG_PATH, 0, winreg.KEY_SET_VALUE)
     if enable:
-        exe = sys.executable
-        if exe.endswith("python.exe"):
-            exe = exe.replace("python.exe", "pythonw.exe")
-        script = str((Path(__file__).parent.parent / "main.py").resolve())
-        winreg.SetValueEx(key, STARTUP_REG_NAME, 0, winreg.REG_SZ,
-                          f'"{exe}" "{script}" --background')
+        if getattr(sys, "frozen", False):
+            cmd = f'"{sys.executable}" --background'
+        else:
+            exe = sys.executable
+            if exe.endswith("python.exe"):
+                exe = exe.replace("python.exe", "pythonw.exe")
+            script = str((Path(__file__).parent.parent / "main.py").resolve())
+            cmd = f'"{exe}" "{script}" --background'
+        winreg.SetValueEx(key, STARTUP_REG_NAME, 0, winreg.REG_SZ, cmd)
     else:
         try:
             winreg.DeleteValue(key, STARTUP_REG_NAME)

@@ -69,13 +69,6 @@ class SPTCheckerApp:
         )
         self._btn.pack(side="right")
 
-        tk.Button(
-            hdr, text="Test Notification", font=("Segoe UI", 8),
-            bg=CARD_BG, fg=TEXT, activebackground=CARD_HOVER,
-            activeforeground=TEXT_BRIGHT, relief="flat", padx=8, pady=2,
-            cursor="hand2", command=self._test_notification,
-        ).pack(side="right", padx=(0, 8))
-
         chk = tk.Checkbutton(
             hdr, text="Run on Startup", font=("Segoe UI", 8),
             fg=TEXT_DIM, bg=BG, selectcolor=CARD_BG,
@@ -129,20 +122,6 @@ class SPTCheckerApp:
             set_startup_enabled(self._startup_var.get())
         except OSError:
             self._startup_var.set(not self._startup_var.get())
-
-    # ── Test notification ─────────────────────────────────────────────
-
-    def _test_notification(self):
-        send_toast(
-            "2 New SPT Mods",
-            "TestMod v1.0.0 by SampleAuthor\nAnotherMod v2.3.1 by AnotherDev",
-            launch_url=FORGE_URL,
-        )
-        send_toast(
-            "1 SPT Mod Updated",
-            "NorthStarRecoil v1.2.4 → v1.2.5",
-            launch_url=FORGE_URL,
-        )
 
     # ── System tray ────────────────────────────────────────────────────
 
