@@ -3,6 +3,7 @@ from pathlib import Path
 # ── Paths ──────────────────────────────────────────────────────────────
 
 APP_DIR = Path(__file__).parent.parent
+ASSETS_DIR = APP_DIR / "assets"
 DATA_DIR = APP_DIR / "data"
 STATE_FILE = DATA_DIR / "spt_mods_state.json"
 CACHE_DIR = DATA_DIR / "thumb_cache"

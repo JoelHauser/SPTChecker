@@ -3,10 +3,9 @@ import sys
 import winreg
 from pathlib import Path
 
-from PIL import Image, ImageDraw
-from winotify import Notification
+from PIL import Image
 
-from .config import STARTUP_REG_NAME, STARTUP_REG_PATH
+from .config import ASSETS_DIR, STARTUP_REG_NAME, STARTUP_REG_PATH
 
 # ── Dark title bar ─────────────────────────────────────────────────────
 
@@ -57,14 +56,18 @@ def set_startup_enabled(enable):
 
 # ── Toast notifications ──────────────────────────────────────────────
 
+_TOAST_ICON = str((ASSETS_DIR / "icon_256.png").resolve())
+
 
 def send_toast(title, body, launch_url=None):
     try:
+        from winotify import Notification
         toast = Notification(
             app_id="SPT Mod Checker",
             title=title,
             msg=body,
             duration="long",
+            icon=_TOAST_ICON,
         )
         if launch_url:
             toast.add_actions(label="View on Forge", launch=launch_url)
@@ -73,10 +76,18 @@ def send_toast(title, body, launch_url=None):
         pass
 
 
-# ── Tray icon ────────────────────────────────────────────────────────
+# ── Tray / window icon ──────────────────────────────────────────────
 
 
-def create_tray_image():
+def load_app_icon():
+    icon_path = ASSETS_DIR / "icon.png"
+    if icon_path.exists():
+        return Image.open(icon_path)
+    return _fallback_icon()
+
+
+def _fallback_icon():
+    from PIL import ImageDraw
     img = Image.new("RGBA", (64, 64), (26, 26, 36, 255))
     draw = ImageDraw.Draw(img)
     draw.rounded_rectangle([4, 4, 60, 60], radius=10, fill=(37, 37, 53, 255),

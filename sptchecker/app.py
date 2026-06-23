@@ -13,7 +13,7 @@ from .config import (
 )
 from .feed import fetch_mods
 from .platform import (
-    create_tray_image, is_startup_enabled, send_toast,
+    is_startup_enabled, load_app_icon, send_toast,
     set_dark_title_bar, set_startup_enabled,
 )
 from .state import download_thumb, load_state, placeholder_thumb, save_state
@@ -31,8 +31,8 @@ class SPTCheckerApp:
 
         set_dark_title_bar(self.root)
 
-        icon_img = create_tray_image().resize((32, 32), Image.LANCZOS)
-        self._icon_photo = ImageTk.PhotoImage(icon_img)
+        self._app_icon = load_app_icon()
+        self._icon_photo = ImageTk.PhotoImage(self._app_icon.resize((32, 32), Image.LANCZOS))
         self.root.iconphoto(True, self._icon_photo)
 
         self.state = load_state()
@@ -68,6 +68,13 @@ class SPTCheckerApp:
             cursor="hand2", command=self._check_now,
         )
         self._btn.pack(side="right")
+
+        tk.Button(
+            hdr, text="Test Notification", font=("Segoe UI", 8),
+            bg=CARD_BG, fg=TEXT, activebackground=CARD_HOVER,
+            activeforeground=TEXT_BRIGHT, relief="flat", padx=8, pady=2,
+            cursor="hand2", command=self._test_notification,
+        ).pack(side="right", padx=(0, 8))
 
         chk = tk.Checkbutton(
             hdr, text="Run on Startup", font=("Segoe UI", 8),
@@ -123,10 +130,24 @@ class SPTCheckerApp:
         except OSError:
             self._startup_var.set(not self._startup_var.get())
 
+    # ── Test notification ─────────────────────────────────────────────
+
+    def _test_notification(self):
+        send_toast(
+            "2 New SPT Mods",
+            "TestMod v1.0.0 by SampleAuthor\nAnotherMod v2.3.1 by AnotherDev",
+            launch_url=FORGE_URL,
+        )
+        send_toast(
+            "1 SPT Mod Updated",
+            "NorthStarRecoil v1.2.4 → v1.2.5",
+            launch_url=FORGE_URL,
+        )
+
     # ── System tray ────────────────────────────────────────────────────
 
     def _setup_tray(self):
-        image = create_tray_image()
+        image = self._app_icon.resize((64, 64), Image.LANCZOS)
         menu = pystray.Menu(
             pystray.MenuItem("Show", self._tray_show, default=True),
             pystray.MenuItem("Check Now", self._tray_check),
