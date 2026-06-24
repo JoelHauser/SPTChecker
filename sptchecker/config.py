@@ -3,15 +3,15 @@ from pathlib import Path
 
 # ── Paths ──────────────────────────────────────────────────────────────
 
+import os
+
 if getattr(sys, "frozen", False):
     _BUNDLE_DIR = Path(sys._MEIPASS)
-    _EXE_DIR = Path(sys.executable).parent
 else:
     _BUNDLE_DIR = Path(__file__).parent.parent
-    _EXE_DIR = Path(__file__).parent.parent
 
 ASSETS_DIR = _BUNDLE_DIR / "assets"
-DATA_DIR = _EXE_DIR / "data"
+DATA_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "SPTModChecker"
 STATE_FILE = DATA_DIR / "spt_mods_state.json"
 CACHE_DIR = DATA_DIR / "thumb_cache"
 
