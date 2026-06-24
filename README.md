@@ -1,6 +1,6 @@
 # SPT Mod Checker
 
-A lightweight Windows desktop app that monitors the [SPT Forge](https://forge.sp-tarkov.com/mods) for new and updated mods. It checks the forge every 30 minutes, displays results in a dark-themed UI, and sends Windows toast notifications when changes are detected — even while running silently in the system tray.
+A lightweight Windows desktop app that monitors the [SPT Forge](https://forge.sp-tarkov.com/mods) for new and updated mods. Checks every 30 minutes, displays results in a dark-themed UI with thumbnails and SPT version badges, and sends Windows toast notifications — even while running silently in the system tray.
 
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey)
@@ -8,21 +8,30 @@ A lightweight Windows desktop app that monitors the [SPT Forge](https://forge.sp
 ## Features
 
 - **Live monitoring** — Polls the SPT Forge RSS feed every 30 minutes for new and updated mods.
-- **Two-panel UI** — New mods and updated mods displayed side-by-side with thumbnails, author, category, and description.
+- **Two-panel UI** — New mods and updated mods displayed side-by-side (6 per column) with thumbnails, author, category, and description.
+- **SPT version badge** — Each card shows the compatible SPT version scraped from the Forge listing page.
 - **Scrolling text** — Hover over any mod card to smoothly scroll truncated text and read the full details.
-- **Windows notifications** — Toast notifications with mod info fire automatically when changes are found, even while minimized.
-- **System tray** — Closing the window minimizes to tray. Right-click the tray icon for Show, Check Now, or Quit.
-- **Run on startup** — One-click checkbox registers the app to launch silently in the background when Windows starts.
-- **Thumbnail caching** — Mod thumbnails are cached to disk so they only download once.
-- **Low resource usage** — Connection pooling, disk-cached images, and a smart timer that sleeps when the window is hidden.
+- **Persistent history** — Mod cards persist across checks and restarts. New findings push older entries down, keeping a rolling list.
+- **Windows notifications** — Toast notifications fire automatically when changes are found, even while minimized to the tray.
+- **System tray** — Closing the window minimizes to tray. Right-click for Show, Check Now, or Quit.
+- **Run on startup** — One-click checkbox to launch silently in the background when Windows starts.
+- **Thumbnail caching** — Mod thumbnails cached to disk, auto-purged after 3 days.
+- **Low resource usage** — Connection pooling, shared fonts, smart timer that sleeps when hidden, compact state file with skipped writes on no-change checks.
 
 ## Setup
 
+### From source
+
 ```bash
 pip install -r requirements.txt
+python main.py
 ```
 
-### Dependencies
+### Standalone exe
+
+Download `SPTModChecker_v1.23.exe` from [Releases](https://github.com/JoelHauser/SPTChecker/releases). No Python install needed — just run it.
+
+### Dependencies (source only)
 
 | Package    | Purpose                        |
 |------------|--------------------------------|
@@ -60,26 +69,30 @@ SPTChecker/
 ├── main.py              # Entry point
 ├── requirements.txt     # pip dependencies
 ├── .gitignore
-├── sptchecker/
-│   ├── config.py        # Constants, paths, colors
-│   ├── feed.py          # RSS fetching and parsing
-│   ├── state.py         # JSON persistence and thumbnail cache
-│   ├── platform.py      # Windows integrations (dark title bar, startup registry, toasts, tray)
-│   ├── widgets.py       # ModCard widget with hover-scroll
-│   └── app.py           # Main application class
-└── data/                # Runtime data (gitignored)
-    ├── spt_mods_state.json
-    └── thumb_cache/
+├── assets/              # App icons
+│   ├── icon.png
+│   ├── icon_256.png
+│   └── icon.ico
+└── sptchecker/
+    ├── config.py        # Constants, paths, colors
+    ├── feed.py          # RSS fetching, SPT version scraping
+    ├── state.py         # JSON persistence, thumbnail cache, purge
+    ├── platform.py      # Dark title bar, startup registry, toasts, tray icon
+    ├── widgets.py       # ModCard widget with hover-scroll
+    └── app.py           # Main application class
 ```
+
+App data (state file and thumbnail cache) is stored in `%LOCALAPPDATA%\SPTModChecker\`.
 
 ## How It Works
 
-1. On launch, the app fetches the latest ~50 mods from the SPT Forge RSS feed.
+1. On launch, the app fetches the latest ~50 mods from the SPT Forge RSS feed and scrapes SPT version compatibility from the listing page.
 2. First run establishes a baseline — all mods are cataloged without triggering notifications.
-3. Every 30 minutes, it re-fetches the feed and compares against the stored state.
+3. Every 30 minutes, it re-fetches and compares against the stored state.
 4. Mods with a new URL are flagged as **new**. Mods with a changed version or update timestamp are flagged as **updated**.
-5. Up to 5 of each are displayed in the UI, and Windows toast notifications are sent if the app is running (even in the tray).
-6. The mod state accumulates over time, so the app can detect changes across restarts.
+5. Up to 6 of each are displayed in the UI. New findings push older entries down in the rolling history.
+6. Windows toast notifications are sent if the app is running (even in the tray).
+7. Thumbnails are cached to disk and auto-purged after 3 days.
 
 ## License
 
