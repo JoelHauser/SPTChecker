@@ -1,10 +1,11 @@
 import hashlib
 import json
+import time
 from io import BytesIO
 
 from PIL import Image
 
-from .config import CACHE_DIR, CARD_BG, DATA_DIR, STATE_FILE, THUMB_SIZE
+from .config import CACHE_DIR, CARD_BG, DATA_DIR, STATE_FILE, THUMB_MAX_AGE_DAYS, THUMB_SIZE
 from .feed import get_session
 
 
@@ -53,3 +54,16 @@ def download_thumb(url):
 
 def placeholder_thumb():
     return Image.new("RGB", THUMB_SIZE, "#333348")
+
+
+def purge_old_thumbs():
+    if not CACHE_DIR.exists():
+        return
+    max_age = THUMB_MAX_AGE_DAYS * 86400
+    now = time.time()
+    for f in CACHE_DIR.iterdir():
+        try:
+            if now - f.stat().st_mtime > max_age:
+                f.unlink()
+        except OSError:
+            pass
