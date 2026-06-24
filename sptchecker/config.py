@@ -24,9 +24,11 @@ DC_NS = "http://purl.org/dc/elements/1.1/"
 # ── Behaviour ──────────────────────────────────────────────────────────
 
 CHECK_INTERVAL_SEC = 30 * 60
-MAX_PER_CATEGORY = 5
+MAX_PER_CATEGORY = 6
 THUMB_SIZE = (52, 52)
 STATE_FIELDS = ("title", "link", "author", "version", "category", "published", "updated")
+DISPLAY_FIELDS = ("title", "link", "author", "version", "category", "thumb_url", "description")
+THUMB_MAX_AGE_DAYS = 3
 
 # ── Windows registry ──────────────────────────────────────────────────
 

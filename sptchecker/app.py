@@ -8,7 +8,7 @@ from PIL import Image, ImageTk
 
 from .config import (
     ACCENT_NEW, ACCENT_UPD, BG, CARD_BG, CARD_HOVER,
-    CHECK_INTERVAL_SEC, FORGE_URL, MAX_PER_CATEGORY,
+    CHECK_INTERVAL_SEC, DISPLAY_FIELDS, FORGE_URL, MAX_PER_CATEGORY,
     SEPARATOR, STATE_FIELDS, STATUS_BG, TEXT, TEXT_BRIGHT, TEXT_DIM,
 )
 from .feed import fetch_mods
@@ -16,7 +16,7 @@ from .platform import (
     is_startup_enabled, load_app_icon, send_toast,
     set_dark_title_bar, set_startup_enabled,
 )
-from .state import download_thumb, load_state, placeholder_thumb, save_state
+from .state import download_thumb, load_state, placeholder_thumb, purge_old_thumbs, save_state
 from .widgets import ModCard
 
 
@@ -26,8 +26,8 @@ class SPTCheckerApp:
         self.root = tk.Tk()
         self.root.title("SPT Mod Checker")
         self.root.configure(bg=BG)
-        self.root.geometry("780x540")
-        self.root.minsize(700, 440)
+        self.root.geometry("780x600")
+        self.root.minsize(700, 500)
 
         set_dark_title_bar(self.root)
 
@@ -170,39 +170,68 @@ class SPTCheckerApp:
         self._lbl_status.configure(text="Fetching mods…")
         threading.Thread(target=self._bg_check, daemon=True).start()
 
+    @staticmethod
+    def _merge_display(fresh, prev, max_count):
+        seen = set()
+        merged = []
+        for mod in fresh + prev:
+            link = mod.get("link", "")
+            if link not in seen:
+                seen.add(link)
+                merged.append(mod)
+            if len(merged) >= max_count:
+                break
+        return merged
+
+    @staticmethod
+    def _strip_for_state(mods, extra_fields=()):
+        fields = (*DISPLAY_FIELDS, *extra_fields)
+        return [{k: m[k] for k in fields if k in m} for m in mods]
+
     def _bg_check(self):
         try:
             feed = fetch_mods()
             known = self.state.get("mods", {})
             first_run = len(known) == 0
 
-            new_mods, updated_mods = [], []
+            fresh_new, fresh_upd = [], []
             for mod in feed:
                 mid = mod["link"]
                 if mid not in known:
-                    new_mods.append(mod)
+                    fresh_new.append(mod)
                 else:
                     old = known[mid]
                     if old.get("version") != mod["version"] or old.get("updated") != mod["updated"]:
-                        updated_mods.append({**mod, "old_version": old.get("version", "?")})
+                        fresh_upd.append({**mod, "old_version": old.get("version", "?")})
 
             for mod in feed:
                 known[mod["link"]] = {k: mod[k] for k in STATE_FIELDS if k in mod}
             self.state["mods"] = known
             self.state["last_check"] = datetime.now().isoformat()
+
+            prev_new = self.state.get("display_new", [])
+            prev_upd = self.state.get("display_updated", [])
+
+            display_new = self._merge_display(fresh_new, prev_new, MAX_PER_CATEGORY)
+            display_upd = self._merge_display(fresh_upd, prev_upd, MAX_PER_CATEGORY)
+
+            self.state["display_new"] = self._strip_for_state(display_new)
+            self.state["display_updated"] = self._strip_for_state(display_upd, ("old_version",))
             save_state(self.state)
 
-            new_mods = new_mods[:MAX_PER_CATEGORY]
-            updated_mods = updated_mods[:MAX_PER_CATEGORY]
+            purge_old_thumbs()
 
-            for mod in new_mods + updated_mods:
+            for mod in display_new + display_upd:
                 pil = download_thumb(mod.get("thumb_url"))
                 mod["_pil"] = pil if pil else placeholder_thumb()
 
+            notify_new = fresh_new[:MAX_PER_CATEGORY]
+            notify_upd = fresh_upd[:MAX_PER_CATEGORY]
             if not first_run:
-                self._send_notifications(new_mods, updated_mods)
+                self._send_notifications(notify_new, notify_upd)
 
-            self.root.after(0, self._apply, new_mods, updated_mods, first_run)
+            self.root.after(0, self._apply, display_new, display_upd, first_run,
+                            len(notify_new), len(notify_upd))
         except Exception as exc:
             self.root.after(0, self._on_error, str(exc))
 
@@ -234,38 +263,38 @@ class SPTCheckerApp:
                 launch_url=url,
             )
 
-    def _apply(self, new_mods, updated_mods, first_run):
+    def _apply(self, display_new, display_upd, first_run, n_fresh_new=0, n_fresh_upd=0):
         self._checking = False
         self._btn.configure(state="normal", text="Check Now")
         self._photos.clear()
         now = datetime.now().strftime("%H:%M:%S")
         total = len(self.state.get("mods", {}))
 
-        if new_mods:
-            self._fill_column(self._new_frame, new_mods, ACCENT_NEW)
+        if display_new:
+            self._fill_column(self._new_frame, display_new, ACCENT_NEW)
         elif first_run:
             self._set_placeholder(self._new_frame, "Baseline set — monitoring for new mods…")
         else:
-            self._set_placeholder(self._new_frame, "No new mods since last check.")
+            self._set_placeholder(self._new_frame, "No new mods detected yet.")
 
-        if updated_mods:
-            self._fill_column(self._upd_frame, updated_mods, ACCENT_UPD)
+        if display_upd:
+            self._fill_column(self._upd_frame, display_upd, ACCENT_UPD)
         elif first_run:
             self._set_placeholder(self._upd_frame, "Baseline set — monitoring for updates…")
         else:
-            self._set_placeholder(self._upd_frame, "No updated mods since last check.")
+            self._set_placeholder(self._upd_frame, "No updates detected yet.")
 
         if first_run:
             self._lbl_status.configure(text=f"Baseline: {total} mods cataloged at {now}")
-        elif new_mods or updated_mods:
+        elif n_fresh_new or n_fresh_upd:
             self._lbl_status.configure(
-                text=f"{len(new_mods)} new, {len(updated_mods)} updated at {now}  •  Tracking {total}"
+                text=f"{n_fresh_new} new, {n_fresh_upd} updated at {now}  •  Tracking {total}"
             )
         else:
             self._lbl_status.configure(text=f"No changes at {now}  •  Tracking {total} mods")
 
         if self._tray:
-            n = len(new_mods) + len(updated_mods)
+            n = n_fresh_new + n_fresh_upd
             tip = f"SPT Mod Checker — {n} changes" if n else "SPT Mod Checker — no changes"
             self._tray.title = tip
 
@@ -285,7 +314,7 @@ class SPTCheckerApp:
             photo = ImageTk.PhotoImage(mod.pop("_pil"))
             self._photos.append(photo)
             card = ModCard(frame, mod, accent, photo)
-            card.pack(fill="x", pady=(0, 3))
+            card.pack(fill="both", expand=True, pady=2)
 
     # ── Timer ──────────────────────────────────────────────────────────
 
