@@ -62,9 +62,11 @@ def set_startup_enabled(enable):
 _TOAST_ICON = str((ASSETS_DIR / "icon_256.png").resolve())
 
 
+from winotify import Notification
+
+
 def send_toast(title, body, launch_url=None):
     try:
-        from winotify import Notification
         toast = Notification(
             app_id="SPT Mod Checker",
             title=title,

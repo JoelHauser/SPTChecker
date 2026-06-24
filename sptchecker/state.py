@@ -17,7 +17,7 @@ def load_state():
 
 def save_state(state):
     DATA_DIR.mkdir(exist_ok=True)
-    STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    STATE_FILE.write_text(json.dumps(state, separators=(",", ":")), encoding="utf-8")
 
 
 def _thumb_path(url):
