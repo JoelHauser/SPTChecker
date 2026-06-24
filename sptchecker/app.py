@@ -58,8 +58,6 @@ class SPTCheckerApp:
     def _build_ui(self):
         hdr = tk.Frame(self.root, bg=BG, pady=4)
         hdr.pack(fill="x", padx=12)
-        tk.Label(hdr, text="SPT Mod Checker", font=("Segoe UI", 12, "bold"),
-                 fg=TEXT_BRIGHT, bg=BG).pack(side="left")
 
         self._btn = tk.Button(
             hdr, text="Check Now", font=("Segoe UI", 8),
@@ -68,6 +66,10 @@ class SPTCheckerApp:
             cursor="hand2", command=self._check_now,
         )
         self._btn.pack(side="right")
+        self._tooltip_id = None
+        self._tooltip_win = None
+        self._btn.bind("<Enter>", self._btn_hover_start)
+        self._btn.bind("<Leave>", self._btn_hover_end)
 
         chk = tk.Checkbutton(
             hdr, text="Run on Startup", font=("Segoe UI", 8),
@@ -82,8 +84,10 @@ class SPTCheckerApp:
         body.columnconfigure(0, weight=1, uniform="col")
         body.columnconfigure(2, weight=1, uniform="col")
 
-        tk.Label(body, text="● NEW MODS", font=("Segoe UI", 10, "bold"),
-                 fg=ACCENT_NEW, bg=BG, anchor="w").grid(row=0, column=0, sticky="w", pady=(0, 3))
+        new_lbl = tk.Label(body, text="● NEW MODS", font=("Segoe UI", 10, "bold"),
+                           fg=ACCENT_NEW, bg=BG, anchor="w")
+        new_lbl.grid(row=0, column=0, sticky="w", pady=(0, 3))
+        new_lbl.bind("<Button-1>", lambda _: self._test_notification())
         self._new_frame = tk.Frame(body, bg=BG)
         self._new_frame.grid(row=1, column=0, sticky="nsew")
 
@@ -114,6 +118,41 @@ class SPTCheckerApp:
             w.destroy()
         tk.Label(frame, text=text, font=("Segoe UI", 9), fg=TEXT_DIM,
                  bg=BG, justify="center").pack(pady=20)
+
+    # ── Tooltip ─────────────────────────────────────────────────────────
+
+    def _btn_hover_start(self, event):
+        self._tooltip_id = self.root.after(1000, self._show_tooltip)
+
+    def _btn_hover_end(self, _e):
+        if self._tooltip_id:
+            self.root.after_cancel(self._tooltip_id)
+            self._tooltip_id = None
+        if self._tooltip_win:
+            self._tooltip_win.destroy()
+            self._tooltip_win = None
+
+    def _show_tooltip(self):
+        self._tooltip_id = None
+        x = self._btn.winfo_rootx()
+        y = self._btn.winfo_rooty() + self._btn.winfo_height() + 4
+        tw = tk.Toplevel(self.root)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry(f"+{x}+{y}")
+        tw.configure(bg=CARD_BG)
+        tk.Label(tw, text="Check the Forge for new or updated mods",
+                 font=("Segoe UI", 8), fg=TEXT, bg=CARD_BG,
+                 padx=8, pady=4).pack()
+        self._tooltip_win = tw
+
+    # ── Hidden test notification ──────────────────────────────────────
+
+    def _test_notification(self):
+        send_toast(
+            "2 New SPT Mods",
+            "TestMod v1.0.0 by SampleAuthor\nAnotherMod v2.3.1 by AnotherDev",
+            launch_url=FORGE_URL,
+        )
 
     # ── Startup toggle ─────────────────────────────────────────────────
 
@@ -215,9 +254,10 @@ class SPTCheckerApp:
             display_new = self._merge_display(fresh_new, prev_new, MAX_PER_CATEGORY)
             display_upd = self._merge_display(fresh_upd, prev_upd, MAX_PER_CATEGORY)
 
-            self.state["display_new"] = self._strip_for_state(display_new)
-            self.state["display_updated"] = self._strip_for_state(display_upd, ("old_version",))
-            save_state(self.state)
+            if fresh_new or fresh_upd or first_run:
+                self.state["display_new"] = self._strip_for_state(display_new)
+                self.state["display_updated"] = self._strip_for_state(display_upd, ("old_version",))
+                save_state(self.state)
 
             purge_old_thumbs()
 
