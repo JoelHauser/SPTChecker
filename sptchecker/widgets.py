@@ -82,7 +82,7 @@ class ModCard(tk.Frame):
 
         self.columnconfigure(1, weight=1)
 
-        for w in [self] + self._widgets:
+        for w in [self, img_lbl, c_title, c_desc] + ([badge] if spt_ver else []):
             w.bind("<Button-1>", self._click)
             w.bind("<Enter>", self._enter)
             w.bind("<Leave>", self._leave)
@@ -92,9 +92,9 @@ class ModCard(tk.Frame):
 
     def _set_bg(self, color):
         self.configure(bg=color)
-        for w in self._widgets:
+        for child in self.winfo_children():
             try:
-                w.configure(bg=color)
+                child.configure(bg=color)
             except tk.TclError:
                 pass
 
