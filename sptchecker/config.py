@@ -17,15 +17,17 @@ CACHE_DIR = DATA_DIR / "thumb_cache"
 
 # ── Feed ───────────────────────────────────────────────────────────────
 
+FEED_URL = "https://forge.sp-tarkov.com/mods/rss"
 API_URL = "https://forge.sp-tarkov.com/api/v0/mods"
 FORGE_URL = "https://forge.sp-tarkov.com/mods"
+DC_NS = "http://purl.org/dc/elements/1.1/"
 
 # ── Behaviour ──────────────────────────────────────────────────────────
 
 CHECK_INTERVAL_SEC = 20 * 60
 CHECK_MIN_MINUTES = 5
 CHECK_MAX_MINUTES = 60
-MAX_PER_CATEGORY = 6
+MAX_PER_CATEGORY = 7
 THUMB_SIZE = (52, 52)
 STATE_FIELDS = ("title", "link", "author", "version", "category", "published", "updated")
 DISPLAY_FIELDS = ("title", "link", "author", "version", "category", "thumb_url", "description", "spt_version")

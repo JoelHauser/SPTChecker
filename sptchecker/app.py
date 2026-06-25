@@ -12,7 +12,7 @@ from .config import (
     DISPLAY_FIELDS, FORGE_URL, MAX_PER_CATEGORY,
     SEPARATOR, STATE_FIELDS, STATUS_BG, TEXT, TEXT_BRIGHT, TEXT_DIM,
 )
-from .feed import fetch_mods
+from .feed import fetch_newest, fetch_recently_updated
 from .platform import (
     is_startup_enabled, load_app_icon, send_toast,
     set_dark_title_bar, set_startup_enabled,
@@ -176,6 +176,7 @@ class SPTCheckerApp:
             launch_url=FORGE_URL,
         )
 
+
     # ── Startup toggle ─────────────────────────────────────────────────
 
     def _on_interval_change(self, _val):
@@ -260,22 +261,28 @@ class SPTCheckerApp:
 
     def _bg_check(self):
         try:
-            feed = fetch_mods()
+            newest = fetch_newest()
+            updated = fetch_recently_updated()
             known = self.state.get("mods", {})
             first_run = len(known) == 0
 
             fresh_new, fresh_upd = [], []
-            if not first_run:
-                for mod in feed:
+            if first_run:
+                fresh_new = newest[:MAX_PER_CATEGORY]
+            else:
+                for mod in newest:
                     mid = mod["link"]
                     if mid not in known:
                         fresh_new.append(mod)
-                    else:
+
+                for mod in updated:
+                    mid = mod["link"]
+                    if mid in known:
                         old = known[mid]
-                        if old.get("version") != mod["version"] or old.get("updated") != mod["updated"]:
+                        if old.get("version") != mod["version"]:
                             fresh_upd.append({**mod, "old_version": old.get("version", "?")})
 
-            for mod in feed:
+            for mod in newest + updated:
                 known[mod["link"]] = {k: mod[k] for k in STATE_FIELDS if k in mod}
             self.state["mods"] = known
             self.state["last_check"] = datetime.now().isoformat()
@@ -382,11 +389,13 @@ class SPTCheckerApp:
     def _fill_column(self, frame, mods, accent):
         for w in frame.winfo_children():
             w.destroy()
-        for mod in mods:
+        for i in range(MAX_PER_CATEGORY):
+            frame.rowconfigure(i, weight=0)
+        for i, mod in enumerate(mods):
             photo = ImageTk.PhotoImage(mod.pop("_pil"))
             self._photos.append(photo)
             card = ModCard(frame, mod, accent, photo)
-            card.pack(fill="both", expand=True, pady=2)
+            card.pack(fill="x", pady=2)
 
     # ── Timer ──────────────────────────────────────────────────────────
 
