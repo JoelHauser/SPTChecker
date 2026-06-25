@@ -11,6 +11,7 @@ SCROLL_PX = 1
 SCROLL_INTERVAL_MS = 30
 PAUSE_START_MS = 800
 PAUSE_END_MS = 1500
+PAUSE_RESET_MS = 1000
 
 _title_font = None
 _desc_font = None
@@ -22,7 +23,6 @@ def _get_fonts():
         _title_font = tkfont.Font(family="Segoe UI", size=9, weight="bold")
         _desc_font = tkfont.Font(family="Segoe UI", size=8)
     return _title_font, _desc_font
-PAUSE_RESET_MS = 1000
 
 
 class ModCard(tk.Frame):

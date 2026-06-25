@@ -86,10 +86,8 @@ class SPTCheckerApp:
         body.columnconfigure(0, weight=1, uniform="col")
         body.columnconfigure(2, weight=1, uniform="col")
 
-        new_lbl = tk.Label(body, text="● NEW MODS", font=("Segoe UI", 10, "bold"),
-                           fg=ACCENT_NEW, bg=BG, anchor="w")
-        new_lbl.grid(row=0, column=0, sticky="w", pady=(0, 3))
-        new_lbl.bind("<Button-1>", lambda _: self._test_notification())
+        tk.Label(body, text="● NEW MODS", font=("Segoe UI", 10, "bold"),
+                 fg=ACCENT_NEW, bg=BG, anchor="w").grid(row=0, column=0, sticky="w", pady=(0, 3))
         self._new_frame = tk.Frame(body, bg=BG)
         self._new_frame.grid(row=1, column=0, sticky="nsew")
 
@@ -166,16 +164,6 @@ class SPTCheckerApp:
                  font=("Segoe UI", 8), fg=TEXT, bg=CARD_BG,
                  padx=8, pady=4).pack()
         self._tooltip_win = tw
-
-    # ── Hidden test notification ──────────────────────────────────────
-
-    def _test_notification(self):
-        send_toast(
-            "2 New SPT Mods",
-            "TestMod v1.0.0 by SampleAuthor\nAnotherMod v2.3.1 by AnotherDev",
-            launch_url=FORGE_URL,
-        )
-
 
     # ── Startup toggle ─────────────────────────────────────────────────
 

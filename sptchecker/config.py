@@ -1,9 +1,8 @@
+import os
 import sys
 from pathlib import Path
 
 # ── Paths ──────────────────────────────────────────────────────────────
-
-import os
 
 if getattr(sys, "frozen", False):
     _BUNDLE_DIR = Path(sys._MEIPASS)
