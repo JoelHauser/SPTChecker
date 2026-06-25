@@ -10,9 +10,10 @@ from .config import ASSETS_DIR, STARTUP_REG_NAME, STARTUP_REG_PATH
 # ── Dark title bar ─────────────────────────────────────────────────────
 
 
-def set_dark_title_bar(window):
+def set_dark_title_bar(window, show=True):
     try:
-        window.update()
+        window.withdraw()
+        window.update_idletasks()
         hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
         value = ctypes.c_int(1)
         for attr in (20, 19):
@@ -20,8 +21,11 @@ def set_dark_title_bar(window):
                 hwnd, attr, ctypes.byref(value), ctypes.sizeof(value)
             ) == 0:
                 break
+        if show:
+            window.deiconify()
     except Exception:
-        pass
+        if show:
+            window.deiconify()
 
 
 # ── Startup registry ──────────────────────────────────────────────────

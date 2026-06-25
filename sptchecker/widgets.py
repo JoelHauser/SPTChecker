@@ -2,7 +2,10 @@ import tkinter as tk
 import tkinter.font as tkfont
 import webbrowser
 
-from .config import BADGE_BG, BADGE_FG, CARD_BG, CARD_HOVER, TEXT_BRIGHT, TEXT_DIM
+from .config import (
+    ACCENT_UPD, BADGE_BG, BADGE_FG, BG, CARD_BG, CARD_HOVER,
+    TEXT_BRIGHT, TEXT_DIM,
+)
 
 SCROLL_PX = 1
 SCROLL_INTERVAL_MS = 30
@@ -164,3 +167,111 @@ class ModCard(tk.Frame):
         for canvas, tid, _ in self._canvases:
             canvas.coords(tid, 0, 1)
         self._scroll_id = self.after(PAUSE_RESET_MS, self._scroll_tick)
+
+
+class IntervalSlider(tk.Canvas):
+    TRACK_COLOR = CARD_BG
+    FILL_COLOR = ACCENT_UPD
+    KNOB_COLOR = "#eeeef4"
+    KNOB_HOVER = ACCENT_UPD
+    TRACK_H = 4
+    KNOB_R = 7
+
+    TICK_COLOR = "#444466"
+    TICK_H = 6
+
+    def __init__(self, parent, from_=5, to=60, step=5, variable=None, command=None, **kw):
+        kw.setdefault("bg", BG)
+        kw.setdefault("highlightthickness", 0)
+        kw.setdefault("height", self.KNOB_R * 2 + 4)
+        kw.setdefault("width", 120)
+        super().__init__(parent, **kw)
+
+        self._min = from_
+        self._max = to
+        self._step = step
+        self._var = variable
+        self._command = command
+        self._dragging = False
+        self._hovering = False
+
+        self.bind("<Configure>", self._draw)
+        self.bind("<Button-1>", self._on_press)
+        self.bind("<B1-Motion>", self._on_drag)
+        self.bind("<ButtonRelease-1>", self._on_release)
+        self.bind("<Enter>", lambda _: self._set_hover(True))
+        self.bind("<Leave>", lambda _: self._set_hover(False))
+
+        if self._var:
+            self._var.trace_add("write", lambda *_: self._draw())
+
+    def _val_to_x(self, val):
+        pad = self.KNOB_R + 2
+        w = self.winfo_width() - pad * 2
+        ratio = (val - self._min) / max(1, self._max - self._min)
+        return pad + ratio * w
+
+    def _x_to_val(self, x):
+        pad = self.KNOB_R + 2
+        w = self.winfo_width() - pad * 2
+        ratio = max(0.0, min(1.0, (x - pad) / max(1, w)))
+        raw = self._min + ratio * (self._max - self._min)
+        return round(raw / self._step) * self._step
+
+    def _draw(self, _event=None):
+        self.delete("all")
+        w = self.winfo_width()
+        h = self.winfo_height()
+        if w < 2:
+            return
+
+        cy = h // 2
+        pad = self.KNOB_R + 2
+        val = self._var.get() if self._var else self._min
+        knob_x = self._val_to_x(val)
+
+        r = self.TRACK_H // 2
+        self.create_round_rect(pad, cy - r, w - pad, cy + r, r, fill=self.TRACK_COLOR, outline="")
+        self.create_round_rect(pad, cy - r, knob_x, cy + r, r, fill=self.FILL_COLOR, outline="")
+
+        color = self.KNOB_HOVER if (self._hovering or self._dragging) else self.KNOB_COLOR
+        kr = self.KNOB_R
+        self.create_oval(knob_x - kr, cy - kr, knob_x + kr, cy + kr,
+                         fill=color, outline="")
+
+    def create_round_rect(self, x1, y1, x2, y2, r, **kw):
+        if x2 - x1 < r * 2:
+            r = max(0, (x2 - x1) // 2)
+        pts = [
+            x1 + r, y1, x2 - r, y1,
+            x2, y1, x2, y1 + r,
+            x2, y2 - r, x2, y2,
+            x2 - r, y2, x1 + r, y2,
+            x1, y2, x1, y2 - r,
+            x1, y1 + r, x1, y1,
+        ]
+        return self.create_polygon(pts, smooth=True, **kw)
+
+    def _set_hover(self, state):
+        self._hovering = state
+        self._draw()
+
+    def _set_val(self, x):
+        val = self._x_to_val(x)
+        if self._var:
+            self._var.set(val)
+        if self._command:
+            self._command(val)
+        self._draw()
+
+    def _on_press(self, e):
+        self._dragging = True
+        self._set_val(e.x)
+
+    def _on_drag(self, e):
+        if self._dragging:
+            self._set_val(e.x)
+
+    def _on_release(self, _e):
+        self._dragging = False
+        self._draw()
