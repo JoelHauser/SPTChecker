@@ -17,9 +17,8 @@ CACHE_DIR = DATA_DIR / "thumb_cache"
 
 # ── Feed ───────────────────────────────────────────────────────────────
 
-FEED_URL = "https://forge.sp-tarkov.com/mods/rss"
+API_URL = "https://forge.sp-tarkov.com/api/v0/mods"
 FORGE_URL = "https://forge.sp-tarkov.com/mods"
-DC_NS = "http://purl.org/dc/elements/1.1/"
 
 # ── Behaviour ──────────────────────────────────────────────────────────
 

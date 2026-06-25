@@ -265,14 +265,15 @@ class SPTCheckerApp:
             first_run = len(known) == 0
 
             fresh_new, fresh_upd = [], []
-            for mod in feed:
-                mid = mod["link"]
-                if mid not in known:
-                    fresh_new.append(mod)
-                else:
-                    old = known[mid]
-                    if old.get("version") != mod["version"] or old.get("updated") != mod["updated"]:
-                        fresh_upd.append({**mod, "old_version": old.get("version", "?")})
+            if not first_run:
+                for mod in feed:
+                    mid = mod["link"]
+                    if mid not in known:
+                        fresh_new.append(mod)
+                    else:
+                        old = known[mid]
+                        if old.get("version") != mod["version"] or old.get("updated") != mod["updated"]:
+                            fresh_upd.append({**mod, "old_version": old.get("version", "?")})
 
             for mod in feed:
                 known[mod["link"]] = {k: mod[k] for k in STATE_FIELDS if k in mod}
