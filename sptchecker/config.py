@@ -23,7 +23,9 @@ DC_NS = "http://purl.org/dc/elements/1.1/"
 
 # ── Behaviour ──────────────────────────────────────────────────────────
 
-CHECK_INTERVAL_SEC = 30 * 60
+CHECK_INTERVAL_SEC = 20 * 60
+CHECK_MIN_MINUTES = 5
+CHECK_MAX_MINUTES = 60
 MAX_PER_CATEGORY = 6
 THUMB_SIZE = (52, 52)
 STATE_FIELDS = ("title", "link", "author", "version", "category", "published", "updated")

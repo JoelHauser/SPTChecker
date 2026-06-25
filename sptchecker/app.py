@@ -8,7 +8,8 @@ from PIL import Image, ImageTk
 
 from .config import (
     ACCENT_NEW, ACCENT_UPD, BG, CARD_BG, CARD_HOVER,
-    CHECK_INTERVAL_SEC, DISPLAY_FIELDS, FORGE_URL, MAX_PER_CATEGORY,
+    CHECK_INTERVAL_SEC, CHECK_MAX_MINUTES, CHECK_MIN_MINUTES,
+    DISPLAY_FIELDS, FORGE_URL, MAX_PER_CATEGORY,
     SEPARATOR, STATE_FIELDS, STATUS_BG, TEXT, TEXT_BRIGHT, TEXT_DIM,
 )
 from .feed import fetch_mods
@@ -17,7 +18,7 @@ from .platform import (
     set_dark_title_bar, set_startup_enabled,
 )
 from .state import download_thumb, load_state, placeholder_thumb, purge_old_thumbs, save_state
-from .widgets import ModCard
+from .widgets import IntervalSlider, ModCard
 
 
 class SPTCheckerApp:
@@ -29,7 +30,7 @@ class SPTCheckerApp:
         self.root.geometry("780x600")
         self.root.minsize(700, 500)
 
-        set_dark_title_bar(self.root)
+        set_dark_title_bar(self.root, show=not start_hidden)
 
         self._app_icon = load_app_icon()
         self._icon_photo = ImageTk.PhotoImage(self._app_icon.resize((32, 32), Image.LANCZOS))
@@ -42,14 +43,14 @@ class SPTCheckerApp:
         self._tray = None
         self._visible = not start_hidden
         self._startup_var = tk.BooleanVar(value=is_startup_enabled())
+        saved_min = self.state.get("check_interval_min", CHECK_INTERVAL_SEC // 60)
+        saved_min = max(CHECK_MIN_MINUTES, min(CHECK_MAX_MINUTES, saved_min))
+        self._interval_var = tk.IntVar(value=saved_min)
 
         self._build_ui()
         self._setup_tray()
 
         self.root.protocol("WM_DELETE_WINDOW", self._hide_to_tray)
-
-        if start_hidden:
-            self.root.withdraw()
 
         self.root.after(400, self._check_now)
 
@@ -78,6 +79,7 @@ class SPTCheckerApp:
             variable=self._startup_var, command=self._toggle_startup,
         )
         chk.pack(side="right", padx=(0, 10))
+
 
         body = tk.Frame(self.root, bg=BG)
         body.pack(fill="both", expand=True, padx=12, pady=(0, 4))
@@ -108,9 +110,29 @@ class SPTCheckerApp:
         self._lbl_status = tk.Label(bar, text="Starting…", font=("Segoe UI", 8),
                                     fg=TEXT_DIM, bg=STATUS_BG)
         self._lbl_status.pack(side="left", padx=10)
+
         self._lbl_timer = tk.Label(bar, text="", font=("Segoe UI", 8),
                                    fg=TEXT_DIM, bg=STATUS_BG)
         self._lbl_timer.pack(side="right", padx=10)
+
+        slider_frame = tk.Frame(bar, bg=STATUS_BG)
+        slider_frame.pack(side="right", padx=(0, 6))
+
+        self._interval_label = tk.Label(
+            slider_frame, text=f"{self._interval_var.get()}m",
+            font=("Segoe UI", 8), fg=TEXT_DIM, bg=STATUS_BG, width=4, anchor="e",
+        )
+        self._interval_label.pack(side="right", padx=(2, 0))
+
+        self._slider = IntervalSlider(
+            slider_frame, from_=CHECK_MIN_MINUTES, to=CHECK_MAX_MINUTES,
+            variable=self._interval_var,
+            command=self._on_interval_change, width=100, bg=STATUS_BG,
+        )
+        self._slider.pack(side="right", padx=(2, 0))
+
+        tk.Label(slider_frame, text="Interval:", font=("Segoe UI", 8),
+                 fg=TEXT_DIM, bg=STATUS_BG).pack(side="right", padx=(0, 2))
 
     @staticmethod
     def _set_placeholder(frame, text):
@@ -155,6 +177,15 @@ class SPTCheckerApp:
         )
 
     # ── Startup toggle ─────────────────────────────────────────────────
+
+    def _on_interval_change(self, _val):
+        minutes = self._interval_var.get()
+        self._interval_label.configure(text=f"{minutes}m")
+        self.state["check_interval_min"] = minutes
+        save_state(self.state)
+        if self._next_check_ts is not None and not self._checking:
+            self._next_check_ts = time.time() + minutes * 60
+            self._tick_timer()
 
     def _toggle_startup(self):
         try:
@@ -359,7 +390,7 @@ class SPTCheckerApp:
     # ── Timer ──────────────────────────────────────────────────────────
 
     def _schedule_next(self):
-        self._next_check_ts = time.time() + CHECK_INTERVAL_SEC
+        self._next_check_ts = time.time() + self._interval_var.get() * 60
         self._tick_timer()
 
     def _tick_timer(self):
