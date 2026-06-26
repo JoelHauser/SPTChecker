@@ -4,6 +4,7 @@ import winreg
 from pathlib import Path
 
 from PIL import Image
+from winotify import Notification
 
 from .config import ASSETS_DIR, STARTUP_REG_NAME, STARTUP_REG_PATH
 
@@ -64,9 +65,6 @@ def set_startup_enabled(enable):
 # ── Toast notifications ──────────────────────────────────────────────
 
 _TOAST_ICON = str((ASSETS_DIR / "icon_256.png").resolve())
-
-
-from winotify import Notification
 
 
 def send_toast(title, body, launch_url=None):

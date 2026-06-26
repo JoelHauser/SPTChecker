@@ -45,11 +45,11 @@ def _fetch_spt_versions():
         return {}
 
 
-def _parse_rss(url):
-    """Parse an RSS feed and return (ET root, spt_version_map)."""
+def _parse_rss(url, version_map):
+    """Parse an RSS feed and return ET root."""
     resp = _session.get(url, timeout=30)
     resp.raise_for_status()
-    return ET.fromstring(resp.content), _fetch_spt_versions()
+    return ET.fromstring(resp.content)
 
 
 def _extract_mods(root, version_map):
@@ -88,15 +88,15 @@ def check_mod_published(url):
         return True
 
 
-def fetch_newest():
-    """Fetch mods from RSS feed — matches website 'Newest' tab order."""
-    root, version_map = _parse_rss(FEED_URL)
-    return _extract_mods(root, version_map)
+def fetch_feeds():
+    """Fetch newest and recently updated mods from RSS feeds."""
+    version_map = _fetch_spt_versions()
 
+    newest_root = _parse_rss(FEED_URL, version_map)
+    newest = _extract_mods(newest_root, version_map)
 
-def fetch_recently_updated():
-    """Fetch mods from RSS 'sort=updated' feed, sorted by dc:date to match website."""
-    root, version_map = _parse_rss(FEED_UPDATED_URL)
-    mods = _extract_mods(root, version_map)
-    mods.sort(key=lambda m: m.get("updated", ""), reverse=True)
-    return mods
+    updated_root = _parse_rss(FEED_UPDATED_URL, version_map)
+    updated = _extract_mods(updated_root, version_map)
+    updated.sort(key=lambda m: m.get("updated", ""), reverse=True)
+
+    return newest, updated

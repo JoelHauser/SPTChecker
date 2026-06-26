@@ -12,7 +12,7 @@ from .config import (
     DISPLAY_FIELDS, FORGE_URL, MAX_PER_CATEGORY,
     SEPARATOR, STATE_FIELDS, STATUS_BG, TEXT, TEXT_BRIGHT, TEXT_DIM,
 )
-from .feed import check_mod_published, fetch_newest, fetch_recently_updated
+from .feed import check_mod_published, fetch_feeds
 from .platform import (
     is_startup_enabled, load_app_icon, send_toast,
     set_dark_title_bar, set_startup_enabled,
@@ -247,8 +247,7 @@ class SPTCheckerApp:
 
     def _bg_check(self):
         try:
-            newest = fetch_newest()
-            updated = fetch_recently_updated()
+            newest, updated = fetch_feeds()
             known = self.state.get("mods", {})
             first_run = len(known) == 0
 
