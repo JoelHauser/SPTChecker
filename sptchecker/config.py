@@ -17,13 +17,14 @@ CACHE_DIR = DATA_DIR / "thumb_cache"
 # ── Feed ───────────────────────────────────────────────────────────────
 
 FEED_URL = "https://forge.sp-tarkov.com/mods/rss"
+FEED_UPDATED_URL = "https://forge.sp-tarkov.com/mods/rss?sort=updated"
 API_URL = "https://forge.sp-tarkov.com/api/v0/mods"
 FORGE_URL = "https://forge.sp-tarkov.com/mods"
 DC_NS = "http://purl.org/dc/elements/1.1/"
 
 # ── Behaviour ──────────────────────────────────────────────────────────
 
-CHECK_INTERVAL_SEC = 20 * 60
+CHECK_DEFAULT_MINUTES = 20
 CHECK_MIN_MINUTES = 5
 CHECK_MAX_MINUTES = 60
 MAX_PER_CATEGORY = 7

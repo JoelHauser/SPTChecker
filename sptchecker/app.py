@@ -8,11 +8,11 @@ from PIL import Image, ImageTk
 
 from .config import (
     ACCENT_NEW, ACCENT_UPD, BG, CARD_BG, CARD_HOVER,
-    CHECK_INTERVAL_SEC, CHECK_MAX_MINUTES, CHECK_MIN_MINUTES,
+    CHECK_DEFAULT_MINUTES, CHECK_MAX_MINUTES, CHECK_MIN_MINUTES,
     DISPLAY_FIELDS, FORGE_URL, MAX_PER_CATEGORY,
     SEPARATOR, STATE_FIELDS, STATUS_BG, TEXT, TEXT_BRIGHT, TEXT_DIM,
 )
-from .feed import fetch_newest, fetch_recently_updated
+from .feed import check_mod_published, fetch_newest, fetch_recently_updated
 from .platform import (
     is_startup_enabled, load_app_icon, send_toast,
     set_dark_title_bar, set_startup_enabled,
@@ -43,7 +43,7 @@ class SPTCheckerApp:
         self._tray = None
         self._visible = not start_hidden
         self._startup_var = tk.BooleanVar(value=is_startup_enabled())
-        saved_min = self.state.get("check_interval_min", CHECK_INTERVAL_SEC // 60)
+        saved_min = self.state.get("check_interval_min", CHECK_DEFAULT_MINUTES)
         saved_min = max(CHECK_MIN_MINUTES, min(CHECK_MAX_MINUTES, saved_min))
         self._interval_var = tk.IntVar(value=saved_min)
 
@@ -79,7 +79,6 @@ class SPTCheckerApp:
             variable=self._startup_var, command=self._toggle_startup,
         )
         chk.pack(side="right", padx=(0, 10))
-
 
         body = tk.Frame(self.root, bg=BG)
         body.pack(fill="both", expand=True, padx=12, pady=(0, 4))
@@ -165,7 +164,7 @@ class SPTCheckerApp:
                  padx=8, pady=4).pack()
         self._tooltip_win = tw
 
-    # ── Startup toggle ─────────────────────────────────────────────────
+    # ── Settings ───────────────────────────────────────────────────────
 
     def _on_interval_change(self, _val):
         minutes = self._interval_var.get()
@@ -243,9 +242,8 @@ class SPTCheckerApp:
         return merged
 
     @staticmethod
-    def _strip_for_state(mods, extra_fields=()):
-        fields = (*DISPLAY_FIELDS, *extra_fields)
-        return [{k: m[k] for k in fields if k in m} for m in mods]
+    def _strip_for_state(mods):
+        return [{k: m[k] for k in DISPLAY_FIELDS if k in m} for m in mods]
 
     def _bg_check(self):
         try:
@@ -254,21 +252,13 @@ class SPTCheckerApp:
             known = self.state.get("mods", {})
             first_run = len(known) == 0
 
-            fresh_new, fresh_upd = [], []
+            fresh_new = []
             if first_run:
                 fresh_new = newest[:MAX_PER_CATEGORY]
             else:
                 for mod in newest:
-                    mid = mod["link"]
-                    if mid not in known:
+                    if mod["link"] not in known:
                         fresh_new.append(mod)
-
-                for mod in updated:
-                    mid = mod["link"]
-                    if mid in known:
-                        old = known[mid]
-                        if old.get("version") != mod["version"]:
-                            fresh_upd.append({**mod, "old_version": old.get("version", "?")})
 
             for mod in newest + updated:
                 known[mod["link"]] = {k: mod[k] for k in STATE_FIELDS if k in mod}
@@ -279,12 +269,14 @@ class SPTCheckerApp:
             prev_upd = self.state.get("display_updated", [])
 
             display_new = self._merge_display(fresh_new, prev_new, MAX_PER_CATEGORY)
-            display_upd = self._merge_display(fresh_upd, prev_upd, MAX_PER_CATEGORY)
+            display_upd = updated[:MAX_PER_CATEGORY]
 
-            if fresh_new or fresh_upd or first_run:
-                self.state["display_new"] = self._strip_for_state(display_new)
-                self.state["display_updated"] = self._strip_for_state(display_upd, ("old_version",))
-                save_state(self.state)
+            display_new = [m for m in display_new if check_mod_published(m["link"])]
+            display_upd = [m for m in display_upd if check_mod_published(m["link"])]
+
+            self.state["display_new"] = self._strip_for_state(display_new)
+            self.state["display_updated"] = self._strip_for_state(display_upd)
+            save_state(self.state)
 
             purge_old_thumbs()
 
@@ -293,7 +285,8 @@ class SPTCheckerApp:
                 mod["_pil"] = pil if pil else placeholder_thumb()
 
             notify_new = fresh_new[:MAX_PER_CATEGORY]
-            notify_upd = fresh_upd[:MAX_PER_CATEGORY]
+            prev_upd_links = {m["link"] for m in prev_upd}
+            notify_upd = [m for m in display_upd if m["link"] not in prev_upd_links] if not first_run else []
             if not first_run:
                 self._send_notifications(notify_new, notify_upd)
 
@@ -319,8 +312,7 @@ class SPTCheckerApp:
         if updated_mods:
             lines = []
             for m in updated_mods[:3]:
-                old_v = m.get("old_version", "?")
-                lines.append(f"{m['title']} {old_v} → {m['version']}")
+                lines.append(f"{m['title']} {m.get('version', '')} by {m.get('author', '')}")
             if len(updated_mods) > 3:
                 lines.append(f"and {len(updated_mods) - 3} more…")
             url = updated_mods[0]["link"] if len(updated_mods) == 1 else FORGE_URL
@@ -377,9 +369,7 @@ class SPTCheckerApp:
     def _fill_column(self, frame, mods, accent):
         for w in frame.winfo_children():
             w.destroy()
-        for i in range(MAX_PER_CATEGORY):
-            frame.rowconfigure(i, weight=0)
-        for i, mod in enumerate(mods):
+        for mod in mods:
             photo = ImageTk.PhotoImage(mod.pop("_pil"))
             self._photos.append(photo)
             card = ModCard(frame, mod, accent, photo)
