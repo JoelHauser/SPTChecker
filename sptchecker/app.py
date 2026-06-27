@@ -229,19 +229,6 @@ class SPTCheckerApp:
         threading.Thread(target=self._bg_check, daemon=True).start()
 
     @staticmethod
-    def _merge_display(fresh, prev, max_count):
-        seen = set()
-        merged = []
-        for mod in fresh + prev:
-            link = mod.get("link", "")
-            if link not in seen:
-                seen.add(link)
-                merged.append(mod)
-            if len(merged) >= max_count:
-                break
-        return merged
-
-    @staticmethod
     def _strip_for_state(mods):
         return [{k: m[k] for k in DISPLAY_FIELDS if k in m} for m in mods]
 
@@ -251,14 +238,6 @@ class SPTCheckerApp:
             known = self.state.get("mods", {})
             first_run = len(known) == 0
 
-            fresh_new = []
-            if first_run:
-                fresh_new = newest[:MAX_PER_CATEGORY]
-            else:
-                for mod in newest:
-                    if mod["link"] not in known:
-                        fresh_new.append(mod)
-
             for mod in newest + updated:
                 known[mod["link"]] = {k: mod[k] for k in STATE_FIELDS if k in mod}
             self.state["mods"] = known
@@ -267,7 +246,7 @@ class SPTCheckerApp:
             prev_new = self.state.get("display_new", [])
             prev_upd = self.state.get("display_updated", [])
 
-            display_new = self._merge_display(fresh_new, prev_new, MAX_PER_CATEGORY)
+            display_new = newest[:MAX_PER_CATEGORY]
             display_upd = updated[:MAX_PER_CATEGORY]
 
             display_new = [m for m in display_new if check_mod_published(m["link"])]
@@ -283,8 +262,9 @@ class SPTCheckerApp:
                 pil = download_thumb(mod.get("thumb_url"))
                 mod["_pil"] = pil if pil else placeholder_thumb()
 
-            notify_new = fresh_new[:MAX_PER_CATEGORY]
+            prev_new_links = {m["link"] for m in prev_new}
             prev_upd_links = {m["link"] for m in prev_upd}
+            notify_new = [m for m in display_new if m["link"] not in prev_new_links] if not first_run else []
             notify_upd = [m for m in display_upd if m["link"] not in prev_upd_links] if not first_run else []
             if not first_run:
                 self._send_notifications(notify_new, notify_upd)
