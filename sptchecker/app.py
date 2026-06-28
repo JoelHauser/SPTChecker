@@ -25,7 +25,7 @@ class SPTCheckerApp:
     def __init__(self, start_hidden=False):
         self._start_hidden = start_hidden
         self.root = tk.Tk()
-        self.root.title("SPT Mod Checker")
+        self.root.title("SPT Mod Checker v2.0.4")
         self.root.configure(bg=BG)
         self.root.geometry("780x600")
         self.root.minsize(700, 500)

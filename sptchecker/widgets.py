@@ -3,7 +3,7 @@ import tkinter.font as tkfont
 import webbrowser
 
 from .config import (
-    ACCENT_UPD, BADGE_BG, BADGE_FG, BG, CARD_BG, CARD_HOVER,
+    ACCENT_UPD, BG, CARD_BG, CARD_HOVER,
     TEXT_BRIGHT, TEXT_DIM,
 )
 
@@ -51,8 +51,6 @@ class ModCard(tk.Frame):
         full_title += f"  —  {mod['author']}"
         if mod.get("category"):
             full_title += f" • {mod['category']}"
-        if mod.get("old_version"):
-            full_title += f" • was {mod['old_version']}"
 
         tf, df = _get_fonts()
         c_title = tk.Canvas(self, bg=CARD_BG, highlightthickness=0,
@@ -63,14 +61,6 @@ class ModCard(tk.Frame):
                                   font=tf, fill=TEXT_BRIGHT)
         self._canvases.append((c_title, tid, tf.measure(full_title)))
         self._widgets.append(c_title)
-
-        # SPT version badge
-        spt_ver = mod.get("spt_version", "")
-        if spt_ver:
-            badge = tk.Label(self, text=f" SPT {spt_ver} ", font=("Segoe UI", 7),
-                             fg=BADGE_FG, bg=BADGE_BG, cursor="hand2")
-            badge.grid(row=2, column=1, sticky="w", pady=(1, 0))
-            self._widgets.append(badge)
 
         # Description line
         full_desc = mod.get("description", "")
@@ -85,7 +75,7 @@ class ModCard(tk.Frame):
 
         self.columnconfigure(1, weight=1)
 
-        for w in [self, img_lbl, c_title, c_desc] + ([badge] if spt_ver else []):
+        for w in [self, img_lbl, c_title, c_desc]:
             w.bind("<Button-1>", self._click)
             w.bind("<Enter>", self._enter)
             w.bind("<Leave>", self._leave)

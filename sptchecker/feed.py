@@ -22,37 +22,47 @@ def strip_html(raw):
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _fetch_spt_versions():
+def _fetch_api_mods():
+    """Fetch mods from API for the updated column."""
     try:
         resp = _session.get(API_URL, headers=_API_HEADERS, params={
-            "include": "versions",
-            "sort": "-published_at",
+            "include": "versions,category",
+            "sort": "-updated_at",
             "per_page": 50,
         }, timeout=30)
         resp.raise_for_status()
-        version_map = {}
+
+        mods = []
         for item in resp.json().get("data", []):
-            url = item.get("detail_url", "")
             versions = item.get("versions", [])
-            if url and versions:
-                spt = versions[0].get("spt_version_constraint", "").strip()
-                if spt.startswith("~"):
-                    spt = spt[1:]
-                if spt:
-                    version_map[url] = spt
-        return version_map
+            latest = versions[0] if versions else {}
+            owner = item.get("owner") or {}
+            category = item.get("category") or {}
+
+            mods.append({
+                "title": item.get("name", ""),
+                "link": item.get("detail_url", ""),
+                "author": owner.get("name", "Unknown"),
+                "version": latest.get("version", ""),
+                "category": category.get("title", ""),
+                "published": item.get("published_at", ""),
+                "updated": latest.get("created_at", item.get("updated_at", "")),
+                "thumb_url": item.get("thumbnail", ""),
+                "description": (item.get("teaser", "") or "")[:300],
+            })
+        return mods
     except Exception:
-        return {}
+        return []
 
 
-def _parse_rss(url, version_map):
+def _parse_rss(url):
     """Parse an RSS feed and return ET root."""
     resp = _session.get(url, timeout=30)
     resp.raise_for_status()
     return ET.fromstring(resp.content)
 
 
-def _extract_mods(root, version_map):
+def _extract_mods(root):
     """Extract mod dicts from parsed RSS XML."""
     mods = []
     for item in root.findall(".//item"):
@@ -74,7 +84,6 @@ def _extract_mods(root, version_map):
             "updated": item.findtext(f"{{{DC_NS}}}date", pub),
             "thumb_url": thumb,
             "description": strip_html(desc_raw)[:300],
-            "spt_version": version_map.get(link, ""),
         })
     return mods
 
@@ -89,14 +98,20 @@ def check_mod_published(url):
 
 
 def fetch_feeds():
-    """Fetch newest and recently updated mods from RSS feeds."""
-    version_map = _fetch_spt_versions()
+    """Fetch newest and recently updated mods from RSS feeds + API."""
+    api_mods = _fetch_api_mods()
 
-    newest_root = _parse_rss(FEED_URL, version_map)
-    newest = _extract_mods(newest_root, version_map)
+    newest = _extract_mods(_parse_rss(FEED_URL))
 
-    updated_root = _parse_rss(FEED_UPDATED_URL, version_map)
-    updated = _extract_mods(updated_root, version_map)
-    updated.sort(key=lambda m: m.get("updated", ""), reverse=True)
+    rss_updated = _extract_mods(_parse_rss(FEED_UPDATED_URL))
 
-    return newest, updated
+    # Combine RSS + API for updated column, deduplicate, sort by version created_at
+    seen = set()
+    combined = []
+    for mod in rss_updated + api_mods:
+        if mod["link"] not in seen:
+            seen.add(mod["link"])
+            combined.append(mod)
+    combined.sort(key=lambda m: m.get("updated", ""), reverse=True)
+
+    return newest, combined

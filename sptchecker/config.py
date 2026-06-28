@@ -30,7 +30,7 @@ CHECK_MAX_MINUTES = 60
 MAX_PER_CATEGORY = 7
 THUMB_SIZE = (52, 52)
 STATE_FIELDS = ("title", "link", "author", "version", "category", "published", "updated")
-DISPLAY_FIELDS = ("title", "link", "author", "version", "category", "thumb_url", "description", "spt_version")
+DISPLAY_FIELDS = ("title", "link", "author", "version", "category", "thumb_url", "description")
 THUMB_MAX_AGE_DAYS = 3
 
 # ── Windows registry ──────────────────────────────────────────────────
@@ -50,5 +50,3 @@ ACCENT_NEW = "#4caf50"
 ACCENT_UPD = "#ffa726"
 STATUS_BG = "#14141c"
 SEPARATOR = "#333348"
-BADGE_BG = "#1a3a4a"
-BADGE_FG = "#7bbfcc"
