@@ -25,7 +25,7 @@ class SPTCheckerApp:
     def __init__(self, start_hidden=False):
         self._start_hidden = start_hidden
         self.root = tk.Tk()
-        self.root.title("SPT Mod Checker v2.0.43")
+        self.root.title("SPT Mod Checker v2.0.5")
         self.root.configure(bg=BG)
         self.root.geometry("780x600")
         self.root.minsize(700, 500)
@@ -104,9 +104,13 @@ class SPTCheckerApp:
 
         bar = tk.Frame(self.root, bg=STATUS_BG, pady=3)
         bar.pack(fill="x", side="bottom")
+        self._forge_dot = tk.Label(bar, text="●", font=("Segoe UI", 6),
+                                   fg=TEXT_DIM, bg=STATUS_BG)
+        self._forge_dot.pack(side="left", padx=(10, 2))
+
         self._lbl_status = tk.Label(bar, text="Starting…", font=("Segoe UI", 8),
                                     fg=TEXT_DIM, bg=STATUS_BG)
-        self._lbl_status.pack(side="left", padx=10)
+        self._lbl_status.pack(side="left")
 
         self._lbl_timer = tk.Label(bar, text="", font=("Segoe UI", 8),
                                    fg=TEXT_DIM, bg=STATUS_BG)
@@ -266,6 +270,15 @@ class SPTCheckerApp:
             prev_upd_links = {m["link"] for m in prev_upd}
             notify_new = [m for m in display_new if m["link"] not in prev_new_links] if not first_run else []
             notify_upd = [m for m in display_upd if m["link"] not in prev_upd_links] if not first_run else []
+
+            # Mark fresh mods for NEW badge
+            fresh_new_links = {m["link"] for m in notify_new}
+            fresh_upd_links = {m["link"] for m in notify_upd}
+            for m in display_new:
+                m["is_fresh"] = m["link"] in fresh_new_links
+            for m in display_upd:
+                m["is_fresh"] = m["link"] in fresh_upd_links
+
             if not first_run:
                 self._send_notifications(notify_new, notify_upd)
 
@@ -304,6 +317,7 @@ class SPTCheckerApp:
     def _apply(self, display_new, display_upd, first_run, n_fresh_new=0, n_fresh_upd=0):
         self._checking = False
         self._btn.configure(state="normal", text="Check Now")
+        self._forge_dot.configure(fg=ACCENT_NEW)
         self._photos.clear()
         now = datetime.now().strftime("%H:%M:%S")
         total = len(self.state.get("mods", {}))
@@ -341,6 +355,7 @@ class SPTCheckerApp:
     def _on_error(self, msg):
         self._checking = False
         self._btn.configure(state="normal", text="Check Now")
+        self._forge_dot.configure(fg="#e53935")
         self._lbl_status.configure(text=f"Error: {msg}")
         self._next_check_ts = time.time() + 300
         self._tick_timer()
