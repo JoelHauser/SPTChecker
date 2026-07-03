@@ -14,8 +14,8 @@ from .config import (
 )
 from .feed import check_mod_published, fetch_feeds
 from .platform import (
-    is_startup_enabled, load_app_icon, send_toast,
-    set_dark_title_bar, set_startup_enabled,
+    is_startup_enabled, load_app_icon, refresh_startup_if_stale,
+    send_toast, set_dark_title_bar, set_startup_enabled,
 )
 from .state import download_thumb, load_state, placeholder_thumb, purge_old_thumbs, save_state
 from .widgets import IntervalSlider, ModCard
@@ -25,7 +25,7 @@ class SPTCheckerApp:
     def __init__(self, start_hidden=False):
         self._start_hidden = start_hidden
         self.root = tk.Tk()
-        self.root.title("SPT Mod Checker v2.0.5")
+        self.root.title("SPT Mod Checker v2.0.45")
         self.root.configure(bg=BG)
         self.root.geometry("780x600")
         self.root.minsize(700, 500)
@@ -42,7 +42,12 @@ class SPTCheckerApp:
         self._next_check_ts = None
         self._tray = None
         self._visible = not start_hidden
-        self._startup_var = tk.BooleanVar(value=is_startup_enabled())
+        startup_on = is_startup_enabled()
+        self._startup_var = tk.BooleanVar(value=startup_on)
+        try:
+            refresh_startup_if_stale()
+        except OSError:
+            pass
         saved_min = self.state.get("check_interval_min", CHECK_DEFAULT_MINUTES)
         saved_min = max(CHECK_MIN_MINUTES, min(CHECK_MAX_MINUTES, saved_min))
         self._interval_var = tk.IntVar(value=saved_min)
