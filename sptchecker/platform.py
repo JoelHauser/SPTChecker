@@ -42,6 +42,19 @@ def is_startup_enabled():
         return False
 
 
+def refresh_startup_if_stale():
+    """Re-write the startup registry entry if the stored exe path doesn't match the running exe."""
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_REG_PATH, 0, winreg.KEY_READ)
+        stored, _ = winreg.QueryValueEx(key, STARTUP_REG_NAME)
+        winreg.CloseKey(key)
+    except FileNotFoundError:
+        return
+    current_exe = sys.executable
+    if current_exe.lower() not in stored.lower():
+        set_startup_enabled(True)
+
+
 def set_startup_enabled(enable):
     key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_REG_PATH, 0, winreg.KEY_SET_VALUE)
     if enable:
