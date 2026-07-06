@@ -1,3 +1,4 @@
+import re
 import threading
 import time
 import tkinter as tk
@@ -11,10 +12,11 @@ from .config import (
     CHECK_DEFAULT_MINUTES, CHECK_MAX_MINUTES, CHECK_MIN_MINUTES,
     DISPLAY_FIELDS, FORGE_URL, MAX_PER_CATEGORY,
     SEPARATOR, STATE_FIELDS, STATUS_BG, TEXT, TEXT_BRIGHT, TEXT_DIM,
+    WINDOW_DEFAULT_GEOMETRY, WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH,
 )
 from .feed import check_mod_published, fetch_feeds
 from .platform import (
-    is_startup_enabled, load_app_icon, refresh_startup_if_stale,
+    badge_icon, is_startup_enabled, load_app_icon, refresh_startup_if_stale,
     send_toast, set_dark_title_bar, set_startup_enabled,
 )
 from .state import download_thumb, load_state, placeholder_thumb, purge_old_thumbs, save_state
@@ -24,11 +26,13 @@ from .widgets import IntervalSlider, ModCard
 class SPTCheckerApp:
     def __init__(self, start_hidden=False):
         self._start_hidden = start_hidden
+        self.state = load_state()
+
         self.root = tk.Tk()
         self.root.title("SPT Mod Checker v2.0.45")
         self.root.configure(bg=BG)
-        self.root.geometry("780x600")
-        self.root.minsize(700, 500)
+        self.root.geometry(self._load_geometry())
+        self.root.minsize(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
 
         set_dark_title_bar(self.root, show=not start_hidden)
 
@@ -36,11 +40,11 @@ class SPTCheckerApp:
         self._icon_photo = ImageTk.PhotoImage(self._app_icon.resize((32, 32), Image.LANCZOS))
         self.root.iconphoto(True, self._icon_photo)
 
-        self.state = load_state()
         self._photos = []
         self._checking = False
         self._next_check_ts = None
         self._tray = None
+        self._unread_count = 0
         self._visible = not start_hidden
         startup_on = is_startup_enabled()
         self._startup_var = tk.BooleanVar(value=startup_on)
@@ -59,6 +63,26 @@ class SPTCheckerApp:
 
         self.root.after(400, self._check_now)
 
+    # ── Window geometry ─────────────────────────────────────────────────
+
+    def _load_geometry(self):
+        geometry = self.state.get("window_geometry", "")
+        m = re.fullmatch(r"(\d+)x(\d+)", geometry)
+        if not m:
+            return WINDOW_DEFAULT_GEOMETRY
+        w = max(WINDOW_MIN_WIDTH, int(m.group(1)))
+        h = max(WINDOW_MIN_HEIGHT, int(m.group(2)))
+        return f"{w}x{h}"
+
+    def _save_geometry(self):
+        if not self._visible:
+            return
+        w = self.root.winfo_width()
+        h = self.root.winfo_height()
+        if w > 1 and h > 1:
+            self.state["window_geometry"] = f"{w}x{h}"
+            save_state(self.state)
+
     # ── UI construction ────────────────────────────────────────────────
 
     def _build_ui(self):
@@ -74,8 +98,7 @@ class SPTCheckerApp:
         self._btn.pack(side="right")
         self._tooltip_id = None
         self._tooltip_win = None
-        self._btn.bind("<Enter>", self._btn_hover_start)
-        self._btn.bind("<Leave>", self._btn_hover_end)
+        self._bind_tooltip(self._btn, "Check the Forge for new or updated mods")
 
         chk = tk.Checkbutton(
             hdr, text="Run on Startup", font=("Segoe UI", 8),
@@ -112,6 +135,10 @@ class SPTCheckerApp:
         self._forge_dot = tk.Label(bar, text="●", font=("Segoe UI", 6),
                                    fg=TEXT_DIM, bg=STATUS_BG)
         self._forge_dot.pack(side="left", padx=(10, 2))
+        self._bind_tooltip(
+            self._forge_dot,
+            "Green: last check reached the Forge OK\nRed: last check failed (retrying)",
+        )
 
         self._lbl_status = tk.Label(bar, text="Starting…", font=("Segoe UI", 8),
                                     fg=TEXT_DIM, bg=STATUS_BG)
@@ -149,10 +176,14 @@ class SPTCheckerApp:
 
     # ── Tooltip ─────────────────────────────────────────────────────────
 
-    def _btn_hover_start(self, event):
-        self._tooltip_id = self.root.after(1000, self._show_tooltip)
+    def _bind_tooltip(self, widget, text):
+        widget.bind("<Enter>", lambda _e: self._tooltip_hover_start(widget, text))
+        widget.bind("<Leave>", self._tooltip_hover_end)
 
-    def _btn_hover_end(self, _e):
+    def _tooltip_hover_start(self, widget, text):
+        self._tooltip_id = self.root.after(1000, lambda: self._show_tooltip(widget, text))
+
+    def _tooltip_hover_end(self, _e=None):
         if self._tooltip_id:
             self.root.after_cancel(self._tooltip_id)
             self._tooltip_id = None
@@ -160,17 +191,16 @@ class SPTCheckerApp:
             self._tooltip_win.destroy()
             self._tooltip_win = None
 
-    def _show_tooltip(self):
+    def _show_tooltip(self, widget, text):
         self._tooltip_id = None
-        x = self._btn.winfo_rootx()
-        y = self._btn.winfo_rooty() + self._btn.winfo_height() + 4
+        x = widget.winfo_rootx()
+        y = widget.winfo_rooty() + widget.winfo_height() + 4
         tw = tk.Toplevel(self.root)
         tw.wm_overrideredirect(True)
         tw.wm_geometry(f"+{x}+{y}")
         tw.configure(bg=CARD_BG)
-        tk.Label(tw, text="Check the Forge for new or updated mods",
-                 font=("Segoe UI", 8), fg=TEXT, bg=CARD_BG,
-                 padx=8, pady=4).pack()
+        tk.Label(tw, text=text, font=("Segoe UI", 8), fg=TEXT, bg=CARD_BG,
+                 padx=8, pady=4, justify="left").pack()
         self._tooltip_win = tw
 
     # ── Settings ───────────────────────────────────────────────────────
@@ -193,17 +223,20 @@ class SPTCheckerApp:
     # ── System tray ────────────────────────────────────────────────────
 
     def _setup_tray(self):
-        image = self._app_icon.resize((64, 64), Image.LANCZOS)
+        self._tray_icon_normal = self._app_icon.resize((64, 64), Image.LANCZOS)
+        self._tray_icon_unread = badge_icon(self._tray_icon_normal)
         menu = pystray.Menu(
             pystray.MenuItem("Show", self._tray_show, default=True),
             pystray.MenuItem("Check Now", self._tray_check),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Quit", self._tray_quit),
         )
-        self._tray = pystray.Icon("SPTModChecker", image, "SPT Mod Checker", menu)
+        self._tray = pystray.Icon(
+            "SPTModChecker", self._tray_icon_normal, "SPT Mod Checker", menu)
         threading.Thread(target=self._tray.run, daemon=True).start()
 
     def _hide_to_tray(self):
+        self._save_geometry()
         self._visible = False
         self.root.withdraw()
 
@@ -216,6 +249,7 @@ class SPTCheckerApp:
         self.root.state("normal")
         self.root.lift()
         self.root.focus_force()
+        self._clear_unread()
         if self._next_check_ts:
             self._tick_timer()
 
@@ -223,9 +257,16 @@ class SPTCheckerApp:
         self.root.after(0, self._check_now)
 
     def _tray_quit(self, _icon=None, _item=None):
+        self._save_geometry()
         if self._tray:
             self._tray.stop()
         self.root.after(0, self.root.destroy)
+
+    def _clear_unread(self):
+        self._unread_count = 0
+        if self._tray:
+            self._tray.icon = self._tray_icon_normal
+            self._tray.title = "SPT Mod Checker"
 
     # ── Check logic ────────────────────────────────────────────────────
 
@@ -246,6 +287,7 @@ class SPTCheckerApp:
             newest, updated = fetch_feeds()
             known = self.state.get("mods", {})
             first_run = len(known) == 0
+            prev_versions = {link: m.get("version", "") for link, m in known.items()}
 
             for mod in newest + updated:
                 known[mod["link"]] = {k: mod[k] for k in STATE_FIELDS if k in mod}
@@ -260,6 +302,11 @@ class SPTCheckerApp:
 
             display_new = [m for m in display_new if check_mod_published(m["link"])]
             display_upd = [m for m in display_upd if check_mod_published(m["link"])]
+
+            for mod in display_upd:
+                old_version = prev_versions.get(mod["link"], "")
+                if old_version and old_version != mod.get("version", ""):
+                    mod["prev_version"] = old_version
 
             self.state["display_new"] = self._strip_for_state(display_new)
             self.state["display_updated"] = self._strip_for_state(display_upd)
@@ -309,7 +356,11 @@ class SPTCheckerApp:
         if updated_mods:
             lines = []
             for m in updated_mods[:3]:
-                lines.append(f"{m['title']} {m.get('version', '')} by {m.get('author', '')}")
+                if m.get("prev_version"):
+                    version_str = f"{m['prev_version']} → {m.get('version', '')}"
+                else:
+                    version_str = m.get("version", "")
+                lines.append(f"{m['title']} {version_str} by {m.get('author', '')}")
             if len(updated_mods) > 3:
                 lines.append(f"and {len(updated_mods) - 3} more…")
             url = updated_mods[0]["link"] if len(updated_mods) == 1 else FORGE_URL
@@ -350,10 +401,16 @@ class SPTCheckerApp:
         else:
             self._lbl_status.configure(text=f"No changes at {now}  •  Tracking {total} mods")
 
+        if not self._visible and not first_run:
+            self._unread_count += n_fresh_new + n_fresh_upd
+
         if self._tray:
-            n = n_fresh_new + n_fresh_upd
-            tip = f"SPT Mod Checker — {n} changes" if n else "SPT Mod Checker — no changes"
-            self._tray.title = tip
+            if self._unread_count:
+                self._tray.icon = self._tray_icon_unread
+                self._tray.title = f"SPT Mod Checker — {self._unread_count} unread"
+            else:
+                self._tray.icon = self._tray_icon_normal
+                self._tray.title = "SPT Mod Checker — no changes"
 
         self._schedule_next()
 

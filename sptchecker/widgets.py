@@ -120,7 +120,9 @@ class ModCard(tk.Frame):
 
         # Title + meta line
         full_title = mod["title"]
-        if mod.get("version"):
+        if mod.get("prev_version") and mod.get("version"):
+            full_title += f"  {mod['prev_version']} → {mod['version']}"
+        elif mod.get("version"):
             full_title += f"  {mod['version']}"
         full_title += f"  —  {mod['author']}"
         if mod.get("category"):

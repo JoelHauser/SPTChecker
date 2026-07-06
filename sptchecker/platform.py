@@ -3,7 +3,7 @@ import sys
 import winreg
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageDraw
 from winotify import Notification
 
 from .config import ASSETS_DIR, STARTUP_REG_NAME, STARTUP_REG_PATH
@@ -106,8 +106,18 @@ def load_app_icon():
     return _fallback_icon()
 
 
+def badge_icon(image, color="#e53935"):
+    """Return a copy of image with a notification dot added to the top-right corner."""
+    img = image.convert("RGBA").copy()
+    w, _h = img.size
+    r = max(6, w // 5)
+    cx, cy = w - r - 2, r + 2
+    draw = ImageDraw.Draw(img)
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=color, outline=(26, 26, 36, 255), width=2)
+    return img
+
+
 def _fallback_icon():
-    from PIL import ImageDraw
     img = Image.new("RGBA", (64, 64), (26, 26, 36, 255))
     draw = ImageDraw.Draw(img)
     draw.rounded_rectangle([4, 4, 60, 60], radius=10, fill=(37, 37, 53, 255),

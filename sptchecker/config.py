@@ -33,6 +33,12 @@ STATE_FIELDS = ("title", "link", "author", "version", "category", "published", "
 DISPLAY_FIELDS = ("title", "link", "author", "version", "category", "thumb_url", "description")
 THUMB_MAX_AGE_DAYS = 3
 
+# ── Window ─────────────────────────────────────────────────────────────
+
+WINDOW_DEFAULT_GEOMETRY = "780x600"
+WINDOW_MIN_WIDTH = 700
+WINDOW_MIN_HEIGHT = 500
+
 # ── Windows registry ──────────────────────────────────────────────────
 
 STARTUP_REG_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
