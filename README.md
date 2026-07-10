@@ -23,7 +23,7 @@ A lightweight Windows desktop app that monitors the [SPT Forge](https://forge.sp
 
 ### Standalone exe
 
-Download `SPTModChecker_v2.0.2.exe` from [Releases](https://github.com/JoelHauser/SPTChecker/releases). No Python needed.
+Download `SPTModChecker_v2.1.1.exe` from [Releases](https://github.com/JoelHauser/SPTChecker/releases). No Python needed.
 
 ### From source
 
