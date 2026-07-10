@@ -11,6 +11,9 @@ from .config import ASSETS_DIR, STARTUP_REG_NAME, STARTUP_REG_PATH
 # ── Dark title bar ─────────────────────────────────────────────────────
 
 
+_SWP_FLAGS = 0x2 | 0x1 | 0x4 | 0x20  # NOMOVE | NOSIZE | NOZORDER | FRAMECHANGED
+
+
 def set_dark_title_bar(window, show=True):
     try:
         window.withdraw()
@@ -22,6 +25,9 @@ def set_dark_title_bar(window, show=True):
                 hwnd, attr, ctypes.byref(value), ctypes.sizeof(value)
             ) == 0:
                 break
+        # DwmSetWindowAttribute alone doesn't always repaint the non-client
+        # frame -- force Windows to redraw the title bar with the new value.
+        ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, _SWP_FLAGS)
         if show:
             window.deiconify()
     except Exception:
