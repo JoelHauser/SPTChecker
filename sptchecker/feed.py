@@ -22,6 +22,20 @@ def strip_html(raw):
     return re.sub(r"\s+", " ", text).strip()
 
 
+CHANGELOG_MAX_CHARS = 800
+
+
+def _truncate(text, limit):
+    """Truncate at a word boundary near `limit` to avoid cutting mid-markdown-token."""
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    space = cut.rfind(" ")
+    if space > limit - 50:
+        cut = cut[:space]
+    return cut.rstrip() + "…"
+
+
 def _fetch_api_mods():
     """Fetch mods from API for the updated column."""
     try:
@@ -49,6 +63,7 @@ def _fetch_api_mods():
                 "updated": latest.get("created_at", item.get("updated_at", "")),
                 "thumb_url": item.get("thumbnail", ""),
                 "description": (item.get("teaser", "") or "")[:300],
+                "changelog": _truncate(latest.get("description", "") or "", CHANGELOG_MAX_CHARS),
             })
         return mods
     except Exception:
@@ -106,12 +121,16 @@ def fetch_feeds():
     rss_updated = _extract_mods(_parse_rss(FEED_UPDATED_URL))
 
     # Combine RSS + API for updated column, deduplicate, sort by version created_at
+    changelogs = {m["link"]: m["changelog"] for m in api_mods if m.get("changelog")}
+
     seen = set()
     combined = []
     for mod in rss_updated + api_mods:
         if mod["link"] not in seen:
             seen.add(mod["link"])
             combined.append(mod)
+    for mod in combined:
+        mod["changelog"] = mod.get("changelog") or changelogs.get(mod["link"], "")
     combined.sort(key=lambda m: m.get("updated", ""), reverse=True)
 
     return newest, combined

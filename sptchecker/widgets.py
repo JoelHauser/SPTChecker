@@ -1,3 +1,4 @@
+import re
 import tkinter as tk
 import tkinter.font as tkfont
 import webbrowser
@@ -6,7 +7,7 @@ from email.utils import parsedate_to_datetime
 
 from .config import (
     ACCENT_NEW, ACCENT_UPD, BG, CARD_BG, CARD_HOVER, SEPARATOR,
-    TEXT_BRIGHT, TEXT_DIM,
+    STATUS_BG, TEXT_BRIGHT, TEXT_DIM,
 )
 
 class ContextMenu(tk.Toplevel):
@@ -60,6 +61,10 @@ PAUSE_RESET_MS = 1000
 
 _title_font = None
 _desc_font = None
+_bold_font = None
+_italic_font = None
+_header_font = None
+_code_font = None
 
 
 def _get_fonts():
@@ -68,6 +73,216 @@ def _get_fonts():
         _title_font = tkfont.Font(family="Segoe UI", size=9, weight="bold")
         _desc_font = tkfont.Font(family="Segoe UI", size=8)
     return _title_font, _desc_font
+
+
+def _get_markdown_fonts():
+    global _bold_font, _italic_font, _header_font, _code_font
+    if _bold_font is None:
+        _bold_font = tkfont.Font(family="Segoe UI", size=8, weight="bold")
+        _italic_font = tkfont.Font(family="Segoe UI", size=8, slant="italic")
+        _header_font = tkfont.Font(family="Segoe UI", size=9, weight="bold")
+        _code_font = tkfont.Font(family="Consolas", size=8)
+    return _bold_font, _italic_font, _header_font, _code_font
+
+
+_INLINE_RE = re.compile(r"\*\*.+?\*\*|\*[^*\n]+\*|`[^`\n]+`|\[[^\]]*\]\([^)]*\)")
+_LINK_RE = re.compile(r"\[([^\]]*)\]\(([^)]*)\)")
+
+
+def _open_link(url):
+    webbrowser.open(url)
+    return "break"
+
+
+def _insert_inline(text_widget, line, base_tags):
+    pos = 0
+    for m in _INLINE_RE.finditer(line):
+        if m.start() > pos:
+            text_widget.insert("end", line[pos:m.start()], base_tags)
+        token = m.group(0)
+        if token.startswith("**"):
+            text_widget.insert("end", token[2:-2], base_tags + ("md_bold",))
+        elif token.startswith("`"):
+            text_widget.insert("end", token[1:-1], base_tags + ("md_code",))
+        elif token.startswith("["):
+            label, url = _LINK_RE.match(token).groups()
+            tag = f"md_link{text_widget._md_link_count}"
+            text_widget._md_link_count += 1
+            text_widget.tag_configure(tag, foreground=ACCENT_UPD, underline=1)
+            text_widget.tag_bind(tag, "<Button-1>", lambda _e, u=url: _open_link(u))
+            text_widget.tag_bind(tag, "<Enter>", lambda _e: text_widget.configure(cursor="hand2"))
+            text_widget.tag_bind(tag, "<Leave>", lambda _e: text_widget.configure(cursor="arrow"))
+            text_widget.insert("end", label or url, base_tags + (tag,))
+        else:
+            text_widget.insert("end", token[1:-1], base_tags + ("md_italic",))
+        pos = m.end()
+    text_widget.insert("end", line[pos:], base_tags)
+
+
+def render_markdown(text_widget, raw):
+    """Render a markdown string into a tk.Text widget using tags (bold/italic/headers/
+    bullets/blockquotes/links). Replaces any prior content."""
+    bold_f, italic_f, header_f, code_f = _get_markdown_fonts()
+
+    was_disabled = text_widget.cget("state") == "disabled"
+    text_widget.configure(state="normal")
+    text_widget.delete("1.0", "end")
+    text_widget._md_link_count = 0
+
+    text_widget.tag_configure("md_bold", font=bold_f)
+    text_widget.tag_configure("md_italic", font=italic_f)
+    text_widget.tag_configure("md_code", font=code_f, background=SEPARATOR)
+    text_widget.tag_configure("md_header", font=header_f, foreground=TEXT_BRIGHT,
+                              spacing1=4, spacing3=2)
+    text_widget.tag_configure("md_quote", foreground=TEXT_DIM, lmargin1=10, lmargin2=10)
+    text_widget.tag_configure("md_bullet", lmargin1=14, lmargin2=26)
+
+    blocks = []
+    blank_before = False
+    for raw_line in raw.splitlines():
+        stripped = raw_line.strip()
+        if not stripped:
+            blank_before = True
+            continue
+        blocks.append((stripped, blank_before))
+        blank_before = False
+
+    for i, (stripped, had_blank) in enumerate(blocks):
+        if i > 0:
+            text_widget.insert("end", "\n\n" if had_blank else "\n")
+
+        hr_m = re.match(r"^([-*_])\1{2,}$", stripped)
+        if hr_m:
+            text_widget.insert("end", "─" * 40, ("md_quote",))
+            continue
+
+        header_m = re.match(r"^(#{1,6})\s+(.*)", stripped)
+        if header_m:
+            _insert_inline(text_widget, header_m.group(2), ("md_header",))
+            continue
+
+        quote_m = re.match(r"^>\s?(.*)", stripped)
+        if quote_m:
+            _insert_inline(text_widget, quote_m.group(1), ("md_quote",))
+            continue
+
+        bullet_m = re.match(r"^[-*+]\s+(.*)", stripped)
+        if bullet_m:
+            text_widget.insert("end", "•  ", ("md_bullet",))
+            _insert_inline(text_widget, bullet_m.group(1), ("md_bullet",))
+            continue
+
+        _insert_inline(text_widget, stripped, ())
+
+    if was_disabled:
+        text_widget.configure(state="disabled")
+
+
+class ChangeNotesWindow(tk.Toplevel):
+    """Popup window showing a mod's change notes / description as rendered markdown.
+
+    Frameless with a hand-drawn title bar (same trick as ContextMenu) rather than
+    relying on Windows to theme the native one -- that turned out to be unreliable
+    for owned Toplevels, so drawing it ourselves guarantees the color matches.
+    """
+
+    WIDTH, HEIGHT = 480, 420
+
+    def __init__(self, parent, mod):
+        super().__init__(parent)
+        self.overrideredirect(True)
+        self.configure(bg=BG)
+        self._position_over(parent)
+        self.transient(parent)
+
+        self._drag_x = 0
+        self._drag_y = 0
+
+        title_bar = tk.Frame(self, bg=STATUS_BG, height=34)
+        title_bar.pack(fill="x")
+        title_bar.pack_propagate(False)
+
+        title_text = f"{mod.get('title', 'Mod')} — Change Notes"
+        title_lbl = tk.Label(title_bar, text=title_text, font=("Segoe UI", 9),
+                             fg=TEXT_DIM, bg=STATUS_BG, anchor="w")
+        title_lbl.pack(side="left", fill="x", expand=True, padx=(12, 4))
+
+        close_btn = tk.Label(title_bar, text="✕", font=("Segoe UI", 10),
+                             fg=TEXT_DIM, bg=STATUS_BG, cursor="hand2", padx=12)
+        close_btn.pack(side="right", fill="y")
+        close_btn.bind("<Enter>", lambda _e: close_btn.configure(bg="#e53935", fg=TEXT_BRIGHT))
+        close_btn.bind("<Leave>", lambda _e: close_btn.configure(bg=STATUS_BG, fg=TEXT_DIM))
+        close_btn.bind("<Button-1>", lambda _e: self.destroy())
+
+        for w in (title_bar, title_lbl):
+            w.bind("<Button-1>", self._start_move)
+            w.bind("<B1-Motion>", self._on_move)
+
+        self.bind("<Escape>", lambda _e: self.destroy())
+        self.bind("<Alt-F4>", lambda _e: self.destroy())
+
+        tk.Label(self, text=mod.get("title", ""), font=("Segoe UI", 11, "bold"),
+                 fg=TEXT_BRIGHT, bg=BG, anchor="w", wraplength=440,
+                 justify="left").pack(fill="x", padx=14, pady=(14, 0))
+
+        version = mod.get("version", "")
+        if mod.get("prev_version") and version:
+            version_text = f"{mod['prev_version']} → {version}"
+        else:
+            version_text = version
+        meta = "  —  ".join(p for p in (version_text, mod.get("author", "")) if p)
+        tk.Label(self, text=meta, font=("Segoe UI", 9), fg=TEXT_DIM, bg=BG,
+                 anchor="w").pack(fill="x", padx=14, pady=(2, 10))
+
+        body = tk.Frame(self, bg=CARD_BG)
+        body.pack(fill="both", expand=True, padx=14, pady=(0, 10))
+
+        text = tk.Text(body, bg=CARD_BG, fg=TEXT_DIM, font=("Segoe UI", 9),
+                       wrap="word", bd=0, highlightthickness=0, cursor="arrow",
+                       padx=10, pady=10, insertwidth=0, state="disabled")
+        scrollbar = MiniScrollbar(body)
+        text.configure(yscrollcommand=scrollbar.set)
+        scrollbar.set_command(text.yview)
+        scrollbar.pack(side="right", fill="y")
+        text.pack(side="left", fill="both", expand=True)
+        text.bind("<MouseWheel>", lambda e: text.yview_scroll(int(-e.delta / 40), "units"))
+
+        changelog = mod.get("changelog", "").strip()
+        if changelog:
+            header = f"**What changed in {version}:**" if version else "**What changed:**"
+            content = f"{header}\n\n{changelog}"
+        else:
+            content = mod.get("description", "").strip() or "No details available."
+        render_markdown(text, content)
+
+        btn_bar = tk.Frame(self, bg=BG)
+        btn_bar.pack(fill="x", padx=14, pady=(0, 14))
+        tk.Button(
+            btn_bar, text="Open on Forge", font=("Segoe UI", 9),
+            bg=CARD_BG, fg=TEXT_BRIGHT, activebackground=CARD_HOVER,
+            activeforeground=TEXT_BRIGHT, relief="flat", padx=10, pady=4,
+            cursor="hand2", command=lambda: webbrowser.open(mod.get("link", "")),
+        ).pack(side="right")
+
+        self.lift()
+        self.focus_force()
+
+    def _position_over(self, parent):
+        parent.update_idletasks()
+        px, py = parent.winfo_rootx(), parent.winfo_rooty()
+        pw, ph = parent.winfo_width(), parent.winfo_height()
+        x = max(0, px + (pw - self.WIDTH) // 2)
+        y = max(0, py + (ph - self.HEIGHT) // 2)
+        self.geometry(f"{self.WIDTH}x{self.HEIGHT}+{x}+{y}")
+
+    def _start_move(self, e):
+        self._drag_x = e.x
+        self._drag_y = e.y
+
+    def _on_move(self, e):
+        x = self.winfo_x() + (e.x - self._drag_x)
+        y = self.winfo_y() + (e.y - self._drag_y)
+        self.geometry(f"+{x}+{y}")
 
 
 def _relative_time(ts_str):
@@ -97,6 +312,14 @@ def _relative_time(ts_str):
             return f"{int(s/86400)}d ago"
     except Exception:
         return ""
+
+
+def _draw_notes_icon(canvas, color):
+    canvas.delete("all")
+    canvas.create_rectangle(2, 1, 11, 13, outline=color, width=1)
+    canvas.create_line(4, 4, 9, 4, fill=color)
+    canvas.create_line(4, 7, 9, 7, fill=color)
+    canvas.create_line(4, 10, 7, 10, fill=color)
 
 
 class ModCard(tk.Frame):
@@ -179,16 +402,33 @@ class ModCard(tk.Frame):
         meta_frame.bind("<Enter>", self._enter)
         meta_frame.bind("<Leave>", self._leave)
 
+        if mod.get("changelog") or mod.get("description"):
+            notes_icon = tk.Canvas(meta_frame, width=14, height=14, bg=CARD_BG,
+                                   highlightthickness=0, cursor="hand2")
+            _draw_notes_icon(notes_icon, TEXT_DIM)
+            notes_icon.pack(side="left", padx=(6, 0))
+            self._widgets.append(notes_icon)
+            notes_icon.bind("<Enter>", lambda e: (self._enter(e), _draw_notes_icon(notes_icon, TEXT_BRIGHT)))
+            notes_icon.bind("<Leave>", lambda e: (self._leave(e), _draw_notes_icon(notes_icon, TEXT_DIM)))
+            notes_icon.bind("<Button-1>", lambda _e: self._show_change_notes())
+
     def _click(self, _e):
         webbrowser.open(self._mod["link"])
 
     def _right_click(self, e):
-        menu = ContextMenu(self, [
+        items = [
             ("Open on Forge", lambda: webbrowser.open(self._mod["link"])),
             ("-", None),
             ("Copy Link", self._copy_link),
-        ])
+        ]
+        if self._mod.get("changelog") or self._mod.get("description"):
+            items.insert(0, ("View Change Notes", self._show_change_notes))
+            items.insert(1, ("-", None))
+        menu = ContextMenu(self, items)
         menu.show(e.x_root, e.y_root)
+
+    def _show_change_notes(self):
+        ChangeNotesWindow(self.winfo_toplevel(), self._mod)
 
     def _copy_link(self):
         self.clipboard_clear()
@@ -270,6 +510,99 @@ class ModCard(tk.Frame):
         self._scroll_id = self.after(PAUSE_RESET_MS, self._scroll_tick)
 
 
+def _round_rect_points(x1, y1, x2, y2, r):
+    if x2 - x1 < r * 2:
+        r = max(0, (x2 - x1) // 2)
+    return [
+        x1 + r, y1, x2 - r, y1,
+        x2, y1, x2, y1 + r,
+        x2, y2 - r, x2, y2,
+        x2 - r, y2, x1 + r, y2,
+        x1, y2, x1, y2 - r,
+        x1, y1 + r, x1, y1,
+    ]
+
+
+class MiniScrollbar(tk.Canvas):
+    """Minimal dark-themed vertical scrollbar for pairing with a Text widget."""
+
+    def __init__(self, parent, **kw):
+        kw.setdefault("bg", CARD_BG)
+        kw.setdefault("highlightthickness", 0)
+        kw.setdefault("width", 8)
+        super().__init__(parent, **kw)
+        self._first = 0.0
+        self._last = 1.0
+        self._command = None
+        self._drag_start_y = None
+        self._drag_start_first = None
+
+        self.bind("<Configure>", lambda _e: self._draw())
+        self.bind("<Button-1>", self._on_press)
+        self.bind("<B1-Motion>", self._on_drag)
+        self.bind("<ButtonRelease-1>", self._on_release)
+
+    def set_command(self, command):
+        self._command = command
+
+    def set(self, first, last):
+        self._first = float(first)
+        self._last = float(last)
+        self._draw()
+
+    def _thumb_coords(self):
+        h = self.winfo_height()
+        if h < 2:
+            return None
+        y0 = self._first * h
+        y1 = self._last * h
+        min_h = 20
+        if y1 - y0 < min_h:
+            mid = (y0 + y1) / 2
+            y0 = max(0, mid - min_h / 2)
+            y1 = min(h, y0 + min_h)
+        return y0, y1
+
+    def _draw(self):
+        self.delete("all")
+        if self._last - self._first >= 0.999:
+            return
+        coords = self._thumb_coords()
+        if not coords:
+            return
+        y0, y1 = coords
+        w = self.winfo_width()
+        pad = 2
+        r = max(1, (w - pad * 2) // 2)
+        self.create_polygon(
+            _round_rect_points(pad, y0 + 1, w - pad, y1 - 1, r),
+            smooth=True, fill=SEPARATOR, outline="",
+        )
+
+    def _on_press(self, e):
+        coords = self._thumb_coords()
+        if not (coords and coords[0] <= e.y <= coords[1]) and self._command:
+            h = self.winfo_height()
+            frac = max(0.0, min(1.0, e.y / max(1, h)))
+            self._command("moveto", frac)
+        self._drag_start_y = e.y
+        self._drag_start_first = self._first
+
+    def _on_drag(self, e):
+        if self._drag_start_y is None or not self._command:
+            return
+        h = self.winfo_height()
+        if h < 2:
+            return
+        delta = (e.y - self._drag_start_y) / h
+        frac = max(0.0, min(1.0, self._drag_start_first + delta))
+        self._command("moveto", frac)
+
+    def _on_release(self, _e):
+        self._drag_start_y = None
+        self._drag_start_first = None
+
+
 class IntervalSlider(tk.Canvas):
     TRACK_COLOR = CARD_BG
     FILL_COLOR = ACCENT_UPD
@@ -341,17 +674,7 @@ class IntervalSlider(tk.Canvas):
                          fill=color, outline="")
 
     def create_round_rect(self, x1, y1, x2, y2, r, **kw):
-        if x2 - x1 < r * 2:
-            r = max(0, (x2 - x1) // 2)
-        pts = [
-            x1 + r, y1, x2 - r, y1,
-            x2, y1, x2, y1 + r,
-            x2, y2 - r, x2, y2,
-            x2 - r, y2, x1 + r, y2,
-            x1, y2, x1, y2 - r,
-            x1, y1 + r, x1, y1,
-        ]
-        return self.create_polygon(pts, smooth=True, **kw)
+        return self.create_polygon(_round_rect_points(x1, y1, x2, y2, r), smooth=True, **kw)
 
     def _set_hover(self, state):
         self._hovering = state
