@@ -65,6 +65,17 @@ _bold_font = None
 _italic_font = None
 _header_font = None
 _code_font = None
+_emoji_font = None
+
+_EMOJI_RE = re.compile(
+    "[\U0001F300-\U0001FAFF"  # pictographs, emoticons, transport, supplemental
+    "\U00002300-\U000027BF"   # misc technical, symbols, dingbats
+    "\U00002B00-\U00002BFF"   # misc symbols & arrows
+    "\U0000FE00-\U0000FE0F"   # variation selectors
+    "\U000020E3"              # combining enclosing keycap
+    "]+",
+    flags=re.UNICODE,
+)
 
 
 def _get_fonts():
@@ -76,13 +87,21 @@ def _get_fonts():
 
 
 def _get_markdown_fonts():
-    global _bold_font, _italic_font, _header_font, _code_font
+    global _bold_font, _italic_font, _header_font, _code_font, _emoji_font
     if _bold_font is None:
         _bold_font = tkfont.Font(family="Segoe UI", size=8, weight="bold")
         _italic_font = tkfont.Font(family="Segoe UI", size=8, slant="italic")
         _header_font = tkfont.Font(family="Segoe UI", size=9, weight="bold")
         _code_font = tkfont.Font(family="Consolas", size=8)
+        _emoji_font = tkfont.Font(family="Segoe UI Emoji", size=9)
     return _bold_font, _italic_font, _header_font, _code_font
+
+
+def _apply_emoji_tags(text_widget):
+    text_widget.tag_configure("md_emoji", font=_emoji_font)
+    content = text_widget.get("1.0", "end-1c")
+    for m in _EMOJI_RE.finditer(content):
+        text_widget.tag_add("md_emoji", f"1.0+{m.start()}c", f"1.0+{m.end()}c")
 
 
 _INLINE_RE = re.compile(r"\*\*.+?\*\*|\*[^*\n]+\*|`[^`\n]+`|\[[^\]]*\]\([^)]*\)")
@@ -174,6 +193,7 @@ def render_markdown(text_widget, raw):
 
         _insert_inline(text_widget, stripped, ())
 
+    _apply_emoji_tags(text_widget)
     if was_disabled:
         text_widget.configure(state="disabled")
 
@@ -252,7 +272,7 @@ class ChangeNotesWindow(tk.Toplevel):
             header = f"**What changed in {version}:**" if version else "**What changed:**"
             content = f"{header}\n\n{changelog}"
         else:
-            content = mod.get("description", "").strip() or "No details available."
+            content = "No update notes available for this version."
         render_markdown(text, content)
 
         btn_bar = tk.Frame(self, bg=BG)
@@ -402,7 +422,7 @@ class ModCard(tk.Frame):
         meta_frame.bind("<Enter>", self._enter)
         meta_frame.bind("<Leave>", self._leave)
 
-        if mod.get("changelog") or mod.get("description"):
+        if mod.get("changelog"):
             notes_icon = tk.Canvas(meta_frame, width=14, height=14, bg=CARD_BG,
                                    highlightthickness=0, cursor="hand2")
             _draw_notes_icon(notes_icon, TEXT_DIM)
@@ -421,7 +441,7 @@ class ModCard(tk.Frame):
             ("-", None),
             ("Copy Link", self._copy_link),
         ]
-        if self._mod.get("changelog") or self._mod.get("description"):
+        if self._mod.get("changelog"):
             items.insert(0, ("View Change Notes", self._show_change_notes))
             items.insert(1, ("-", None))
         menu = ContextMenu(self, items)

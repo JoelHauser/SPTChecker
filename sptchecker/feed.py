@@ -22,7 +22,7 @@ def strip_html(raw):
     return re.sub(r"\s+", " ", text).strip()
 
 
-CHANGELOG_MAX_CHARS = 800
+CHANGELOG_MAX_CHARS = 5000
 
 
 def _truncate(text, limit):
@@ -36,12 +36,12 @@ def _truncate(text, limit):
     return cut.rstrip() + "…"
 
 
-def _fetch_api_mods():
-    """Fetch mods from API for the updated column."""
+def _fetch_api_mods(sort="-updated_at"):
+    """Fetch mods from the API with the given sort order."""
     try:
         resp = _session.get(API_URL, headers=_API_HEADERS, params={
             "include": "versions,category",
-            "sort": "-updated_at",
+            "sort": sort,
             "per_page": 50,
         }, timeout=30)
         resp.raise_for_status()
@@ -63,6 +63,7 @@ def _fetch_api_mods():
                 "updated": latest.get("created_at", item.get("updated_at", "")),
                 "thumb_url": item.get("thumbnail", ""),
                 "description": (item.get("teaser", "") or "")[:300],
+                "full_description": item.get("teaser", "") or "",
                 "changelog": _truncate(latest.get("description", "") or "", CHANGELOG_MAX_CHARS),
             })
         return mods
@@ -88,6 +89,7 @@ def _extract_mods(root):
         enc = item.find("enclosure")
         thumb = enc.get("url", "") if enc is not None else ""
         desc_raw = item.findtext("description", "")
+        full_desc = strip_html(desc_raw)
 
         mods.append({
             "title": item.findtext("title", ""),
@@ -98,7 +100,8 @@ def _extract_mods(root):
             "published": pub,
             "updated": item.findtext(f"{{{DC_NS}}}date", pub),
             "thumb_url": thumb,
-            "description": strip_html(desc_raw)[:300],
+            "description": full_desc[:300],
+            "full_description": full_desc,
         })
     return mods
 
@@ -114,23 +117,32 @@ def check_mod_published(url):
 
 def fetch_feeds():
     """Fetch newest and recently updated mods from RSS feeds + API."""
-    api_mods = _fetch_api_mods()
+    api_updated = _fetch_api_mods(sort="-updated_at")
+    api_newest = _fetch_api_mods(sort="-created_at")
 
     newest = _extract_mods(_parse_rss(FEED_URL))
-
     rss_updated = _extract_mods(_parse_rss(FEED_UPDATED_URL))
 
-    # Combine RSS + API for updated column, deduplicate, sort by version created_at
-    changelogs = {m["link"]: m["changelog"] for m in api_mods if m.get("changelog")}
+    # Build changelog + full_description lookup from both API sets
+    all_api = {m["link"]: m for m in api_updated + api_newest}
+    changelogs = {link: m["changelog"] for link, m in all_api.items() if m.get("changelog")}
+    full_descs = {link: m["full_description"] for link, m in all_api.items() if m.get("full_description")}
 
+    # Enrich new mods with API changelogs
+    for mod in newest:
+        mod["changelog"] = mod.get("changelog") or changelogs.get(mod["link"], "")
+        mod["full_description"] = mod.get("full_description") or full_descs.get(mod["link"], "")
+
+    # Combine RSS + API for updated column, deduplicate, sort by version created_at
     seen = set()
     combined = []
-    for mod in rss_updated + api_mods:
+    for mod in rss_updated + api_updated:
         if mod["link"] not in seen:
             seen.add(mod["link"])
             combined.append(mod)
     for mod in combined:
         mod["changelog"] = mod.get("changelog") or changelogs.get(mod["link"], "")
+        mod["full_description"] = mod.get("full_description") or full_descs.get(mod["link"], "")
     combined.sort(key=lambda m: m.get("updated", ""), reverse=True)
 
     return newest, combined

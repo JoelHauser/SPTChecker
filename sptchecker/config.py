@@ -30,7 +30,7 @@ CHECK_MAX_MINUTES = 60
 MAX_PER_CATEGORY = 7
 THUMB_SIZE = (52, 52)
 STATE_FIELDS = ("title", "link", "author", "version", "category", "published", "updated")
-DISPLAY_FIELDS = ("title", "link", "author", "version", "category", "thumb_url", "description", "changelog")
+DISPLAY_FIELDS = ("title", "link", "author", "version", "category", "thumb_url", "description", "full_description", "changelog")
 THUMB_MAX_AGE_DAYS = 3
 
 # ── Window ─────────────────────────────────────────────────────────────

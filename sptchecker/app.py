@@ -29,7 +29,7 @@ class SPTCheckerApp:
         self.state = load_state()
 
         self.root = tk.Tk()
-        self.root.title("SPT Mod Checker v2.1.1")
+        self.root.title("SPT Mod Checker v2.2.0")
         self.root.configure(bg=BG)
         self.root.geometry(self._load_geometry())
         self.root.minsize(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
