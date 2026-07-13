@@ -272,7 +272,7 @@ class ChangeNotesWindow(tk.Toplevel):
             header = f"**What changed in {version}:**" if version else "**What changed:**"
             content = f"{header}\n\n{changelog}"
         else:
-            content = "No update notes available for this version."
+            content = mod.get("full_description", "").strip() or "No update notes available for this version."
         render_markdown(text, content)
 
         btn_bar = tk.Frame(self, bg=BG)
