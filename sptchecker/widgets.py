@@ -1,4 +1,5 @@
 import re
+import threading
 import tkinter as tk
 import tkinter.font as tkfont
 import webbrowser
@@ -6,9 +7,10 @@ from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
 
 from .config import (
-    ACCENT_NEW, ACCENT_UPD, BG, CARD_BG, CARD_HOVER, SEPARATOR,
-    STATUS_BG, TEXT_BRIGHT, TEXT_DIM,
+    ACCENT_NEW, ACCENT_NEW_AUTHOR, ACCENT_UPD, BG, CARD_BG, CARD_HOVER,
+    FORGE_USER_URL, NEW_AUTHOR_DAYS, SEPARATOR, STATUS_BG, TEXT_BRIGHT, TEXT_DIM,
 )
+from .feed import fetch_author_id
 
 class ContextMenu(tk.Toplevel):
     """Styled frameless context menu matching the dark theme."""
@@ -248,12 +250,17 @@ class FramelessPopup(tk.Toplevel):
         self.geometry(f"{self.WIDTH}x{self.HEIGHT}+{x}+{y}")
 
     def _start_move(self, e):
-        self._drag_x = e.x
-        self._drag_y = e.y
+        # Screen-absolute coordinates, not widget-relative -- the title bar and
+        # its label are two different widgets with different origins, so e.x/e.y
+        # would jump every time the cursor crosses from one to the other mid-drag.
+        self._drag_x = e.x_root
+        self._drag_y = e.y_root
+        self._drag_win_x = self.winfo_x()
+        self._drag_win_y = self.winfo_y()
 
     def _on_move(self, e):
-        x = self.winfo_x() + (e.x - self._drag_x)
-        y = self.winfo_y() + (e.y - self._drag_y)
+        x = self._drag_win_x + (e.x_root - self._drag_x)
+        y = self._drag_win_y + (e.y_root - self._drag_y)
         self.geometry(f"+{x}+{y}")
 
     def _finish_show(self):
@@ -330,13 +337,18 @@ class StatsWindow(FramelessPopup):
         scrollbar = MiniScrollbar(container)
         canvas.configure(yscrollcommand=scrollbar.set)
         scrollbar.set_command(canvas.yview)
-        scrollbar.pack(side="right", fill="y")
         canvas.pack(side="left", fill="both", expand=True)
+        # Scrollbar is only packed once content actually overflows (see
+        # _update_scrollbar) -- an empty, non-functional strip when everything
+        # already fits looks like a broken control, not a nice one.
 
         inner = tk.Frame(canvas, bg=BG)
         inner_id = canvas.create_window(0, 0, window=inner, anchor="nw")
-        inner.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(inner_id, width=e.width))
+        inner.bind("<Configure>", lambda _e: self._update_scrollbar(canvas, scrollbar))
+        canvas.bind("<Configure>", lambda e: (
+            canvas.itemconfigure(inner_id, width=e.width),
+            self._update_scrollbar(canvas, scrollbar),
+        ))
 
         def on_wheel(e):
             canvas.yview_scroll(int(-e.delta / 40), "units")
@@ -349,12 +361,26 @@ class StatsWindow(FramelessPopup):
                  font=("Segoe UI", 9), fg=TEXT_DIM, bg=BG, anchor="w").pack(
             fill="x", padx=16, pady=(2, 14))
 
-        self._build_section(inner, "Top Authors", stats["top_authors"], "mod")
-        self._build_section(inner, "Top Categories", stats["top_categories"], "mod")
+        self._build_section(inner, "Top Authors (Last 30 Days)", stats["top_authors"], "mod",
+                            link_ids=stats.get("author_ids"), link_fallback=stats.get("author_links"))
+        self._build_section(inner, "Top Categories (Last 30 Days)", stats["top_categories"], "mod")
 
         self._finish_show()
 
-    def _build_section(self, parent, heading, entries, unit):
+    @staticmethod
+    def _update_scrollbar(canvas, scrollbar):
+        canvas.configure(scrollregion=canvas.bbox("all"))
+        canvas.update_idletasks()
+        bbox = canvas.bbox("all")
+        content_h = (bbox[3] - bbox[1]) if bbox else 0
+        if content_h > canvas.winfo_height():
+            if not scrollbar.winfo_ismapped():
+                scrollbar.pack(side="right", fill="y")
+                scrollbar.update_idletasks()
+        elif scrollbar.winfo_ismapped():
+            scrollbar.pack_forget()
+
+    def _build_section(self, parent, heading, entries, unit, link_ids=None, link_fallback=None):
         tk.Label(parent, text=heading.upper(), font=("Segoe UI", 8, "bold"),
                  fg=TEXT_DIM, bg=BG, anchor="w").pack(fill="x", padx=16, pady=(6, 2))
 
@@ -369,40 +395,81 @@ class StatsWindow(FramelessPopup):
         for i, (name, count) in enumerate(entries):
             row = tk.Frame(section, bg=CARD_BG)
             row.pack(fill="x", padx=10, pady=4)
-            tk.Label(row, text=f"{i + 1}. {name}", font=("Segoe UI", 9),
-                     fg=TEXT_BRIGHT, bg=CARD_BG, anchor="w").pack(side="left")
+
+            author_id = link_ids.get(name) if link_ids else None
+            fallback_link = link_fallback.get(name) if link_fallback else None
+            name_lbl = tk.Label(row, text=f"{i + 1}. {name}", font=("Segoe UI", 9),
+                                fg=TEXT_BRIGHT, bg=CARD_BG, anchor="w")
+            name_lbl.pack(side="left")
+            if author_id or fallback_link:
+                name_lbl.configure(cursor="hand2")
+                name_lbl.bind("<Button-1>",
+                              lambda _e, n=name, aid=author_id, link=fallback_link:
+                              self._open_author(n, aid, link))
+                name_lbl.bind("<Enter>", lambda _e, w=name_lbl: w.configure(fg=ACCENT_UPD))
+                name_lbl.bind("<Leave>", lambda _e, w=name_lbl: w.configure(fg=TEXT_BRIGHT))
+
             plural = "" if count == 1 else "s"
             tk.Label(row, text=f"{count} {unit}{plural}", font=("Segoe UI", 9),
                      fg=TEXT_DIM, bg=CARD_BG, anchor="e").pack(side="right")
 
+    def _open_author(self, name, author_id, fallback_link):
+        if author_id:
+            webbrowser.open(f"{FORGE_USER_URL}/{author_id}/{name.lower()}")
+        elif fallback_link:
+            threading.Thread(
+                target=self._resolve_and_open_author, args=(name, fallback_link), daemon=True,
+            ).start()
 
-def _relative_time(ts_str):
-    """Convert an ISO or RFC 2822 timestamp to a relative string."""
+    @staticmethod
+    def _resolve_and_open_author(name, fallback_link):
+        resolved_id = fetch_author_id(fallback_link)
+        if resolved_id:
+            webbrowser.open(f"{FORGE_USER_URL}/{resolved_id}/{name.lower()}")
+        else:
+            webbrowser.open(fallback_link)
+
+
+def _parse_ts(ts_str):
+    """Parse an ISO or RFC 2822 timestamp (RSS vs API formats) into an aware datetime."""
     if not ts_str:
-        return ""
+        return None
     try:
         try:
             dt = parsedate_to_datetime(ts_str)
         except Exception:
-            ts_str = ts_str.replace("Z", "+00:00")
-            dt = datetime.fromisoformat(ts_str)
+            dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
-        now = datetime.now(timezone.utc)
-        diff = now - dt
-        s = diff.total_seconds()
-        if s < 60:
-            return "just now"
-        elif s < 3600:
-            return f"{int(s/60)}m ago"
-        elif s < 86400:
-            return f"{int(s/3600)}h ago"
-        elif s < 86400 * 2:
-            return "yesterday"
-        else:
-            return f"{int(s/86400)}d ago"
+        return dt
     except Exception:
+        return None
+
+
+def _relative_time(ts_str):
+    """Convert an ISO or RFC 2822 timestamp to a relative string."""
+    dt = _parse_ts(ts_str)
+    if dt is None:
         return ""
+    s = (datetime.now(timezone.utc) - dt).total_seconds()
+    if s < 60:
+        return "just now"
+    elif s < 3600:
+        return f"{int(s/60)}m ago"
+    elif s < 86400:
+        return f"{int(s/3600)}h ago"
+    elif s < 86400 * 2:
+        return "yesterday"
+    else:
+        return f"{int(s/86400)}d ago"
+
+
+def _is_new_author(author_since):
+    dt = _parse_ts(author_since)
+    if dt is None:
+        return False
+    age_days = (datetime.now(timezone.utc) - dt).total_seconds() / 86400
+    return age_days <= NEW_AUTHOR_DAYS
 
 
 def _draw_notes_icon(canvas, color):
@@ -416,7 +483,7 @@ def _draw_notes_icon(canvas, color):
 class ModCard(tk.Frame):
     def __init__(self, parent, mod, accent, photo):
         super().__init__(parent, bg=CARD_BG, padx=6, pady=4,
-                         highlightbackground=accent, highlightthickness=1)
+                         highlightbackground=accent, highlightthickness=2)
         self._mod = mod
         self._photo = photo
         self._widgets = []
@@ -462,6 +529,12 @@ class ModCard(tk.Frame):
                                  fg=CARD_BG, bg=ACCENT_NEW, cursor="hand2")
             new_badge.pack(side="left", padx=(0, 5))
             self._widgets.append(new_badge)
+
+        if _is_new_author(mod.get("author_since", "")):
+            author_badge = tk.Label(meta_frame, text=" NEW AUTHOR ", font=("Segoe UI", 7, "bold"),
+                                    fg=TEXT_BRIGHT, bg=ACCENT_NEW_AUTHOR, cursor="hand2")
+            author_badge.pack(side="left", padx=(0, 5))
+            self._widgets.append(author_badge)
 
         ts = _relative_time(mod.get("updated", ""))
         if ts:
@@ -692,101 +765,3 @@ class MiniScrollbar(tk.Canvas):
     def _on_release(self, _e):
         self._drag_start_y = None
         self._drag_start_first = None
-
-
-class IntervalSlider(tk.Canvas):
-    TRACK_COLOR = CARD_BG
-    FILL_COLOR = ACCENT_UPD
-    KNOB_COLOR = "#eeeef4"
-    KNOB_HOVER = ACCENT_UPD
-    TRACK_H = 4
-    KNOB_R = 7
-
-    TICK_COLOR = "#444466"
-    TICK_H = 6
-
-    def __init__(self, parent, from_=5, to=60, step=5, variable=None, command=None, **kw):
-        kw.setdefault("bg", BG)
-        kw.setdefault("highlightthickness", 0)
-        kw.setdefault("height", self.KNOB_R * 2 + 4)
-        kw.setdefault("width", 120)
-        super().__init__(parent, **kw)
-
-        self._min = from_
-        self._max = to
-        self._step = step
-        self._var = variable
-        self._command = command
-        self._dragging = False
-        self._hovering = False
-
-        self.bind("<Configure>", self._draw)
-        self.bind("<Button-1>", self._on_press)
-        self.bind("<B1-Motion>", self._on_drag)
-        self.bind("<ButtonRelease-1>", self._on_release)
-        self.bind("<Enter>", lambda _: self._set_hover(True))
-        self.bind("<Leave>", lambda _: self._set_hover(False))
-
-        if self._var:
-            self._var.trace_add("write", lambda *_: self._draw())
-
-    def _val_to_x(self, val):
-        pad = self.KNOB_R + 2
-        w = self.winfo_width() - pad * 2
-        ratio = (val - self._min) / max(1, self._max - self._min)
-        return pad + ratio * w
-
-    def _x_to_val(self, x):
-        pad = self.KNOB_R + 2
-        w = self.winfo_width() - pad * 2
-        ratio = max(0.0, min(1.0, (x - pad) / max(1, w)))
-        raw = self._min + ratio * (self._max - self._min)
-        return round(raw / self._step) * self._step
-
-    def _draw(self, _event=None):
-        self.delete("all")
-        w = self.winfo_width()
-        h = self.winfo_height()
-        if w < 2:
-            return
-
-        cy = h // 2
-        pad = self.KNOB_R + 2
-        val = self._var.get() if self._var else self._min
-        knob_x = self._val_to_x(val)
-
-        r = self.TRACK_H // 2
-        self.create_round_rect(pad, cy - r, w - pad, cy + r, r, fill=self.TRACK_COLOR, outline="")
-        self.create_round_rect(pad, cy - r, knob_x, cy + r, r, fill=self.FILL_COLOR, outline="")
-
-        color = self.KNOB_HOVER if (self._hovering or self._dragging) else self.KNOB_COLOR
-        kr = self.KNOB_R
-        self.create_oval(knob_x - kr, cy - kr, knob_x + kr, cy + kr,
-                         fill=color, outline="")
-
-    def create_round_rect(self, x1, y1, x2, y2, r, **kw):
-        return self.create_polygon(_round_rect_points(x1, y1, x2, y2, r), smooth=True, **kw)
-
-    def _set_hover(self, state):
-        self._hovering = state
-        self._draw()
-
-    def _set_val(self, x):
-        val = self._x_to_val(x)
-        if self._var:
-            self._var.set(val)
-        if self._command:
-            self._command(val)
-        self._draw()
-
-    def _on_press(self, e):
-        self._dragging = True
-        self._set_val(e.x)
-
-    def _on_drag(self, e):
-        if self._dragging:
-            self._set_val(e.x)
-
-    def _on_release(self, _e):
-        self._dragging = False
-        self._draw()

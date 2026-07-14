@@ -8,6 +8,27 @@ from winotify import Notification
 
 from .config import ASSETS_DIR, STARTUP_REG_NAME, STARTUP_REG_PATH
 
+# ── DPI awareness ──────────────────────────────────────────────────────
+
+
+def set_dpi_aware():
+    """Declare the process per-monitor DPI aware.
+
+    Without this, Windows treats the app as DPI-unaware and bitmap-stretches the
+    whole rendered window to match display scaling -- which is what makes small,
+    precise shapes (icons, color swatches) look blurry/pixelated on any scaled
+    display (125%/150%, the default on most laptops). Must be called before the
+    Tk root window is created.
+    """
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PER_MONITOR_DPI_AWARE
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()  # fallback for older Windows
+        except Exception:
+            pass
+
+
 # ── Dark title bar ─────────────────────────────────────────────────────
 
 

@@ -8,7 +8,10 @@ from io import BytesIO
 
 from PIL import Image
 
-from .config import CACHE_DIR, CARD_BG, DATA_DIR, STATE_FILE, THUMB_MAX_AGE_DAYS, THUMB_SIZE
+from .config import (
+    CACHE_DIR, CARD_BG, DATA_DIR, STATE_FILE, THUMB_MAX_AGE_DAYS, THUMB_SIZE,
+    TOP_STATS_WINDOW_DAYS,
+)
 from .feed import get_session
 
 
@@ -89,18 +92,37 @@ def _parse_dt(ts_str):
 
 
 def compute_stats(mods):
-    """Summarize the full mod-tracking history (self.state["mods"]) for the stats view."""
+    """Summarize the full mod-tracking history (self.state["mods"]) for the stats view.
+
+    "Top authors" and "top categories" are both rolling windows (TOP_STATS_WINDOW_DAYS),
+    not all-time -- recomputed fresh from each mod's published date every call, so
+    activity ages out day by day rather than needing a stored counter that gets reset
+    on a schedule.
+    """
     author_counts = Counter()
+    author_ids = {}
+    author_links = {}
     category_counts = Counter()
     added_this_week = 0
-    week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+    now = datetime.now(timezone.utc)
+    week_ago = now - timedelta(days=7)
+    window_start = now - timedelta(days=TOP_STATS_WINDOW_DAYS)
 
     for mod in mods.values():
-        author_counts[mod.get("author") or "Unknown"] += 1
-        category = mod.get("category")
-        if category:
-            category_counts[category] += 1
+        author = mod.get("author") or "Unknown"
         published = _parse_dt(mod.get("published", ""))
+        in_window = published and published >= window_start
+        if in_window:
+            author_counts[author] += 1
+        if mod.get("author_id"):
+            author_ids[author] = mod["author_id"]
+        elif mod.get("link"):
+            # Fallback so the UI can look up the id on demand (e.g. on click) for
+            # authors whose id wasn't captured during a regular feed check.
+            author_links.setdefault(author, mod["link"])
+        category = mod.get("category")
+        if category and in_window:
+            category_counts[category] += 1
         if published and published >= week_ago:
             added_this_week += 1
 
@@ -108,5 +130,7 @@ def compute_stats(mods):
         "total": len(mods),
         "added_this_week": added_this_week,
         "top_authors": author_counts.most_common(5),
+        "author_ids": author_ids,
+        "author_links": author_links,
         "top_categories": category_counts.most_common(5),
     }

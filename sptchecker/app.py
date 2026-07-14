@@ -5,11 +5,12 @@ import tkinter as tk
 from datetime import datetime
 
 import pystray
-from PIL import Image, ImageTk
+from PIL import Image, ImageDraw, ImageTk
 
 from .config import (
     ACCENT_NEW, ACCENT_UPD, BG, CARD_BG, CARD_HOVER,
-    CHECK_DEFAULT_MINUTES, CHECK_MAX_MINUTES, CHECK_MIN_MINUTES,
+    CATEGORY_COLOR_DEFAULT, CATEGORY_COLORS,
+    CHECK_INTERVAL_MINUTES,
     DISPLAY_FIELDS, FORGE_URL, MAX_PER_CATEGORY,
     SEPARATOR, STATE_FIELDS, STATUS_BG, TEXT, TEXT_BRIGHT, TEXT_DIM,
     WINDOW_DEFAULT_GEOMETRY, WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH,
@@ -17,12 +18,41 @@ from .config import (
 from .feed import check_mod_published, fetch_feeds
 from .platform import (
     badge_icon, is_startup_enabled, load_app_icon, refresh_startup_if_stale,
-    send_toast, set_dark_title_bar, set_startup_enabled,
+    send_toast, set_dark_title_bar, set_dpi_aware, set_startup_enabled,
 )
 from .state import (
     compute_stats, download_thumb, load_state, placeholder_thumb, purge_old_thumbs, save_state,
 )
-from .widgets import IntervalSlider, ModCard, StatsWindow
+from .widgets import ModCard, StatsWindow
+
+_ICON_SUPERSAMPLE = 4
+
+
+def _render_info_icon(color, size=16):
+    """Render a small 'i' info icon via PIL + LANCZOS downscale for real anti-aliasing
+    -- Tk Canvas primitives (create_oval/create_line) aren't anti-aliased on Windows
+    and look jagged/pixelated at these small sizes, independent of display scaling."""
+    big = size * _ICON_SUPERSAMPLE
+    img = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    pad = _ICON_SUPERSAMPLE
+    draw.ellipse([pad, pad, big - pad, big - pad], outline=color, width=_ICON_SUPERSAMPLE)
+    cx = big // 2
+    dot_r = _ICON_SUPERSAMPLE * 1.1
+    dot_cy = big * 0.28
+    draw.ellipse([cx - dot_r, dot_cy - dot_r, cx + dot_r, dot_cy + dot_r], fill=color)
+    draw.line([cx, big * 0.45, cx, big * 0.74], fill=color, width=int(_ICON_SUPERSAMPLE * 1.3))
+    img = img.resize((size, size), Image.LANCZOS)
+    return ImageTk.PhotoImage(img)
+
+
+def _render_dot(color, size=10):
+    """Render a small filled circle via PIL + LANCZOS downscale (see _render_info_icon)."""
+    big = size * _ICON_SUPERSAMPLE
+    img = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+    ImageDraw.Draw(img).ellipse([0, 0, big - 1, big - 1], fill=color)
+    img = img.resize((size, size), Image.LANCZOS)
+    return ImageTk.PhotoImage(img)
 
 
 class SPTCheckerApp:
@@ -30,6 +60,7 @@ class SPTCheckerApp:
         self._start_hidden = start_hidden
         self.state = load_state()
 
+        set_dpi_aware()
         self.root = tk.Tk()
         self.root.title("SPT Mod Checker v2.2.0")
         self.root.configure(bg=BG)
@@ -54,9 +85,6 @@ class SPTCheckerApp:
             refresh_startup_if_stale()
         except OSError:
             pass
-        saved_min = self.state.get("check_interval_min", CHECK_DEFAULT_MINUTES)
-        saved_min = max(CHECK_MIN_MINUTES, min(CHECK_MAX_MINUTES, saved_min))
-        self._interval_var = tk.IntVar(value=saved_min)
 
         self._build_ui()
         self._setup_tray()
@@ -91,13 +119,20 @@ class SPTCheckerApp:
         hdr = tk.Frame(self.root, bg=BG, pady=4)
         hdr.pack(fill="x", padx=12)
 
+        self._legend_icon_dim = _render_info_icon(TEXT_DIM)
+        self._legend_icon_bright = _render_info_icon(TEXT_BRIGHT)
+        self._legend_icon = tk.Label(hdr, image=self._legend_icon_dim, bg=BG, cursor="hand2")
+        self._legend_icon.pack(side="left")
+        self._legend_icon.bind("<Enter>", self._legend_enter)
+        self._legend_icon.bind("<Leave>", self._legend_leave)
+
         stats_btn = tk.Button(
             hdr, text="Stats", font=("Segoe UI", 8),
             bg=CARD_BG, fg=TEXT, activebackground=CARD_HOVER,
             activeforeground=TEXT_BRIGHT, relief="flat", padx=8, pady=2,
             cursor="hand2", command=self._show_stats,
         )
-        stats_btn.pack(side="left")
+        stats_btn.pack(side="left", padx=(6, 0))
 
         self._btn = tk.Button(
             hdr, text="Check Now", font=("Segoe UI", 8),
@@ -158,25 +193,6 @@ class SPTCheckerApp:
                                    fg=TEXT_DIM, bg=STATUS_BG)
         self._lbl_timer.pack(side="right", padx=10)
 
-        slider_frame = tk.Frame(bar, bg=STATUS_BG)
-        slider_frame.pack(side="right", padx=(0, 6))
-
-        self._interval_label = tk.Label(
-            slider_frame, text=f"{self._interval_var.get()}m",
-            font=("Segoe UI", 8), fg=TEXT_DIM, bg=STATUS_BG, width=4, anchor="e",
-        )
-        self._interval_label.pack(side="right", padx=(2, 0))
-
-        self._slider = IntervalSlider(
-            slider_frame, from_=CHECK_MIN_MINUTES, to=CHECK_MAX_MINUTES,
-            variable=self._interval_var,
-            command=self._on_interval_change, width=100, bg=STATUS_BG,
-        )
-        self._slider.pack(side="right", padx=(2, 0))
-
-        tk.Label(slider_frame, text="Interval:", font=("Segoe UI", 8),
-                 fg=TEXT_DIM, bg=STATUS_BG).pack(side="right", padx=(0, 2))
-
     @staticmethod
     def _set_placeholder(frame, text):
         for w in frame.winfo_children():
@@ -213,16 +229,51 @@ class SPTCheckerApp:
                  padx=8, pady=4, justify="left").pack()
         self._tooltip_win = tw
 
-    # ── Settings ───────────────────────────────────────────────────────
+    def _legend_enter(self, _e):
+        self._legend_icon.configure(image=self._legend_icon_bright)
+        self._tooltip_id = self.root.after(500, self._show_legend)
 
-    def _on_interval_change(self, _val):
-        minutes = self._interval_var.get()
-        self._interval_label.configure(text=f"{minutes}m")
-        self.state["check_interval_min"] = minutes
-        save_state(self.state)
-        if self._next_check_ts is not None and not self._checking:
-            self._next_check_ts = time.time() + minutes * 60
-            self._tick_timer()
+    def _legend_leave(self, _e=None):
+        self._legend_icon.configure(image=self._legend_icon_dim)
+        self._tooltip_hover_end()
+
+    def _show_legend(self):
+        self._tooltip_id = None
+        x = self._legend_icon.winfo_rootx()
+        y = self._legend_icon.winfo_rooty() + self._legend_icon.winfo_height() + 4
+        tw = tk.Toplevel(self.root)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry(f"+{x}+{y}")
+        tw.configure(bg=CARD_BG)
+
+        inner = tk.Frame(tw, bg=CARD_BG, padx=10, pady=8)
+        inner.pack()
+        tk.Label(inner, text="CARD COLOR MEANS CATEGORY", font=("Segoe UI", 8, "bold"),
+                 fg=TEXT_DIM, bg=CARD_BG, anchor="w").grid(
+            row=0, column=0, columnspan=4, sticky="w", pady=(0, 6))
+
+        tw._dot_photos = []  # keep PhotoImage refs alive for this popup's lifetime
+        cols = 2
+        for i, (category, color) in enumerate(CATEGORY_COLORS.items()):
+            row, col = i // cols + 1, (i % cols) * 2
+            dot = _render_dot(color)
+            tw._dot_photos.append(dot)
+            tk.Label(inner, image=dot, bg=CARD_BG).grid(
+                row=row, column=col, sticky="w", padx=(0, 6), pady=2)
+            tk.Label(inner, text=category, font=("Segoe UI", 8), fg=TEXT, bg=CARD_BG,
+                     anchor="w").grid(row=row, column=col + 1, sticky="w", padx=(0, 14), pady=2)
+
+        last_row = len(CATEGORY_COLORS) // cols + 2
+        other_dot = _render_dot(CATEGORY_COLOR_DEFAULT)
+        tw._dot_photos.append(other_dot)
+        tk.Label(inner, image=other_dot, bg=CARD_BG).grid(
+            row=last_row, column=0, sticky="w", padx=(0, 6), pady=(6, 0))
+        tk.Label(inner, text="Other / uncategorized", font=("Segoe UI", 8), fg=TEXT, bg=CARD_BG,
+                 anchor="w").grid(row=last_row, column=1, columnspan=3, sticky="w", pady=(6, 0))
+
+        self._tooltip_win = tw
+
+    # ── Settings ───────────────────────────────────────────────────────
 
     def _toggle_startup(self):
         try:
@@ -393,14 +444,14 @@ class SPTCheckerApp:
         total = len(self.state.get("mods", {}))
 
         if display_new:
-            self._fill_column(self._new_frame, display_new, ACCENT_NEW)
+            self._fill_column(self._new_frame, display_new)
         elif first_run:
             self._set_placeholder(self._new_frame, "Baseline set — monitoring for new mods…")
         else:
             self._set_placeholder(self._new_frame, "No new mods detected yet.")
 
         if display_upd:
-            self._fill_column(self._upd_frame, display_upd, ACCENT_UPD)
+            self._fill_column(self._upd_frame, display_upd)
         elif first_run:
             self._set_placeholder(self._upd_frame, "Baseline set — monitoring for updates…")
         else:
@@ -436,19 +487,20 @@ class SPTCheckerApp:
         self._next_check_ts = time.time() + 300
         self._tick_timer()
 
-    def _fill_column(self, frame, mods, accent):
+    def _fill_column(self, frame, mods):
         for w in frame.winfo_children():
             w.destroy()
         for mod in mods:
             photo = ImageTk.PhotoImage(mod.pop("_pil"))
             self._photos.append(photo)
+            accent = CATEGORY_COLORS.get(mod.get("category"), CATEGORY_COLOR_DEFAULT)
             card = ModCard(frame, mod, accent, photo)
             card.pack(fill="x", pady=2)
 
     # ── Timer ──────────────────────────────────────────────────────────
 
     def _schedule_next(self):
-        self._next_check_ts = time.time() + self._interval_var.get() * 60
+        self._next_check_ts = time.time() + CHECK_INTERVAL_MINUTES * 60
         self._tick_timer()
 
     def _tick_timer(self):
