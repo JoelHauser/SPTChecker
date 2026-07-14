@@ -198,17 +198,16 @@ def render_markdown(text_widget, raw):
         text_widget.configure(state="disabled")
 
 
-class ChangeNotesWindow(tk.Toplevel):
-    """Popup window showing a mod's change notes / description as rendered markdown.
+class FramelessPopup(tk.Toplevel):
+    """Base for frameless, dark-themed popups with a hand-drawn draggable title bar.
 
-    Frameless with a hand-drawn title bar (same trick as ContextMenu) rather than
-    relying on Windows to theme the native one -- that turned out to be unreliable
-    for owned Toplevels, so drawing it ourselves guarantees the color matches.
+    Relying on Windows to theme a native title bar turned out to be unreliable for
+    owned Toplevels, so drawing it ourselves guarantees the color always matches.
     """
 
     WIDTH, HEIGHT = 480, 420
 
-    def __init__(self, parent, mod):
+    def __init__(self, parent, title_text):
         super().__init__(parent)
         self.overrideredirect(True)
         self.configure(bg=BG)
@@ -222,7 +221,6 @@ class ChangeNotesWindow(tk.Toplevel):
         title_bar.pack(fill="x")
         title_bar.pack_propagate(False)
 
-        title_text = f"{mod.get('title', 'Mod')} — Change Notes"
         title_lbl = tk.Label(title_bar, text=title_text, font=("Segoe UI", 9),
                              fg=TEXT_DIM, bg=STATUS_BG, anchor="w")
         title_lbl.pack(side="left", fill="x", expand=True, padx=(12, 4))
@@ -240,6 +238,36 @@ class ChangeNotesWindow(tk.Toplevel):
 
         self.bind("<Escape>", lambda _e: self.destroy())
         self.bind("<Alt-F4>", lambda _e: self.destroy())
+
+    def _position_over(self, parent):
+        parent.update_idletasks()
+        px, py = parent.winfo_rootx(), parent.winfo_rooty()
+        pw, ph = parent.winfo_width(), parent.winfo_height()
+        x = max(0, px + (pw - self.WIDTH) // 2)
+        y = max(0, py + (ph - self.HEIGHT) // 2)
+        self.geometry(f"{self.WIDTH}x{self.HEIGHT}+{x}+{y}")
+
+    def _start_move(self, e):
+        self._drag_x = e.x
+        self._drag_y = e.y
+
+    def _on_move(self, e):
+        x = self.winfo_x() + (e.x - self._drag_x)
+        y = self.winfo_y() + (e.y - self._drag_y)
+        self.geometry(f"+{x}+{y}")
+
+    def _finish_show(self):
+        self.lift()
+        self.focus_force()
+
+
+class ChangeNotesWindow(FramelessPopup):
+    """Popup window showing a mod's change notes / description as rendered markdown."""
+
+    WIDTH, HEIGHT = 480, 420
+
+    def __init__(self, parent, mod):
+        super().__init__(parent, f"{mod.get('title', 'Mod')} — Change Notes")
 
         tk.Label(self, text=mod.get("title", ""), font=("Segoe UI", 11, "bold"),
                  fg=TEXT_BRIGHT, bg=BG, anchor="w", wraplength=440,
@@ -284,25 +312,68 @@ class ChangeNotesWindow(tk.Toplevel):
             cursor="hand2", command=lambda: webbrowser.open(mod.get("link", "")),
         ).pack(side="right")
 
-        self.lift()
-        self.focus_force()
+        self._finish_show()
 
-    def _position_over(self, parent):
-        parent.update_idletasks()
-        px, py = parent.winfo_rootx(), parent.winfo_rooty()
-        pw, ph = parent.winfo_width(), parent.winfo_height()
-        x = max(0, px + (pw - self.WIDTH) // 2)
-        y = max(0, py + (ph - self.HEIGHT) // 2)
-        self.geometry(f"{self.WIDTH}x{self.HEIGHT}+{x}+{y}")
 
-    def _start_move(self, e):
-        self._drag_x = e.x
-        self._drag_y = e.y
+class StatsWindow(FramelessPopup):
+    """Popup showing a summary of the full mod-tracking history."""
 
-    def _on_move(self, e):
-        x = self.winfo_x() + (e.x - self._drag_x)
-        y = self.winfo_y() + (e.y - self._drag_y)
-        self.geometry(f"+{x}+{y}")
+    WIDTH, HEIGHT = 360, 480
+
+    def __init__(self, parent, stats):
+        super().__init__(parent, "Mod Tracker Stats")
+
+        container = tk.Frame(self, bg=BG)
+        container.pack(fill="both", expand=True)
+
+        canvas = tk.Canvas(container, bg=BG, highlightthickness=0)
+        scrollbar = MiniScrollbar(container)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.set_command(canvas.yview)
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        inner = tk.Frame(canvas, bg=BG)
+        inner_id = canvas.create_window(0, 0, window=inner, anchor="nw")
+        inner.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(inner_id, width=e.width))
+
+        def on_wheel(e):
+            canvas.yview_scroll(int(-e.delta / 40), "units")
+        canvas.bind("<Enter>", lambda _e: canvas.bind_all("<MouseWheel>", on_wheel))
+        canvas.bind("<Leave>", lambda _e: canvas.unbind_all("<MouseWheel>"))
+
+        tk.Label(inner, text=f"{stats['total']:,} mods tracked", font=("Segoe UI", 13, "bold"),
+                 fg=TEXT_BRIGHT, bg=BG, anchor="w").pack(fill="x", padx=16, pady=(16, 0))
+        tk.Label(inner, text=f"{stats['added_this_week']} added in the last 7 days",
+                 font=("Segoe UI", 9), fg=TEXT_DIM, bg=BG, anchor="w").pack(
+            fill="x", padx=16, pady=(2, 14))
+
+        self._build_section(inner, "Top Authors", stats["top_authors"], "mod")
+        self._build_section(inner, "Top Categories", stats["top_categories"], "mod")
+
+        self._finish_show()
+
+    def _build_section(self, parent, heading, entries, unit):
+        tk.Label(parent, text=heading.upper(), font=("Segoe UI", 8, "bold"),
+                 fg=TEXT_DIM, bg=BG, anchor="w").pack(fill="x", padx=16, pady=(6, 2))
+
+        section = tk.Frame(parent, bg=CARD_BG)
+        section.pack(fill="x", padx=16, pady=(0, 4))
+
+        if not entries:
+            tk.Label(section, text="Not enough data yet", font=("Segoe UI", 9),
+                     fg=TEXT_DIM, bg=CARD_BG, anchor="w").pack(fill="x", padx=10, pady=8)
+            return
+
+        for i, (name, count) in enumerate(entries):
+            row = tk.Frame(section, bg=CARD_BG)
+            row.pack(fill="x", padx=10, pady=4)
+            tk.Label(row, text=f"{i + 1}. {name}", font=("Segoe UI", 9),
+                     fg=TEXT_BRIGHT, bg=CARD_BG, anchor="w").pack(side="left")
+            plural = "" if count == 1 else "s"
+            tk.Label(row, text=f"{count} {unit}{plural}", font=("Segoe UI", 9),
+                     fg=TEXT_DIM, bg=CARD_BG, anchor="e").pack(side="right")
 
 
 def _relative_time(ts_str):

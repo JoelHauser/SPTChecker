@@ -1,6 +1,9 @@
 import hashlib
 import json
 import time
+from collections import Counter
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from io import BytesIO
 
 from PIL import Image
@@ -67,3 +70,43 @@ def purge_old_thumbs():
                 f.unlink()
         except OSError:
             pass
+
+
+def _parse_dt(ts_str):
+    """Parse an ISO or RFC 2822 timestamp (RSS vs API formats) into an aware datetime."""
+    if not ts_str:
+        return None
+    try:
+        try:
+            dt = parsedate_to_datetime(ts_str)
+        except Exception:
+            dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
+
+
+def compute_stats(mods):
+    """Summarize the full mod-tracking history (self.state["mods"]) for the stats view."""
+    author_counts = Counter()
+    category_counts = Counter()
+    added_this_week = 0
+    week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+
+    for mod in mods.values():
+        author_counts[mod.get("author") or "Unknown"] += 1
+        category = mod.get("category")
+        if category:
+            category_counts[category] += 1
+        published = _parse_dt(mod.get("published", ""))
+        if published and published >= week_ago:
+            added_this_week += 1
+
+    return {
+        "total": len(mods),
+        "added_this_week": added_this_week,
+        "top_authors": author_counts.most_common(5),
+        "top_categories": category_counts.most_common(5),
+    }
