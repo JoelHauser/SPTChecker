@@ -19,8 +19,10 @@ from .platform import (
     badge_icon, is_startup_enabled, load_app_icon, refresh_startup_if_stale,
     send_toast, set_dark_title_bar, set_startup_enabled,
 )
-from .state import download_thumb, load_state, placeholder_thumb, purge_old_thumbs, save_state
-from .widgets import IntervalSlider, ModCard
+from .state import (
+    compute_stats, download_thumb, load_state, placeholder_thumb, purge_old_thumbs, save_state,
+)
+from .widgets import IntervalSlider, ModCard, StatsWindow
 
 
 class SPTCheckerApp:
@@ -88,6 +90,14 @@ class SPTCheckerApp:
     def _build_ui(self):
         hdr = tk.Frame(self.root, bg=BG, pady=4)
         hdr.pack(fill="x", padx=12)
+
+        stats_btn = tk.Button(
+            hdr, text="Stats", font=("Segoe UI", 8),
+            bg=CARD_BG, fg=TEXT, activebackground=CARD_HOVER,
+            activeforeground=TEXT_BRIGHT, relief="flat", padx=8, pady=2,
+            cursor="hand2", command=self._show_stats,
+        )
+        stats_btn.pack(side="left")
 
         self._btn = tk.Button(
             hdr, text="Check Now", font=("Segoe UI", 8),
@@ -219,6 +229,10 @@ class SPTCheckerApp:
             set_startup_enabled(self._startup_var.get())
         except OSError:
             self._startup_var.set(not self._startup_var.get())
+
+    def _show_stats(self):
+        stats = compute_stats(self.state.get("mods", {}))
+        StatsWindow(self.root, stats)
 
     # ── System tray ────────────────────────────────────────────────────
 
