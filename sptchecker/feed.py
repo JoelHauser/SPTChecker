@@ -9,7 +9,7 @@ from .config import API_MOD_URL, API_URL, DC_NS, FEED_URL, FEED_UPDATED_URL
 _MOD_ID_RE = re.compile(r"/mod/(\d+)/")
 
 _session = requests.Session()
-_session.headers["User-Agent"] = "SPTModChecker/2.0"
+_session.headers["User-Agent"] = "SPTModChecker/2.2.5"
 
 _API_HEADERS = {"Accept": "application/json"}
 

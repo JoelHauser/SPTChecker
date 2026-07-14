@@ -3,7 +3,6 @@ import json
 import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
-from email.utils import parsedate_to_datetime
 from io import BytesIO
 
 from PIL import Image
@@ -13,6 +12,7 @@ from .config import (
     TOP_STATS_WINDOW_DAYS,
 )
 from .feed import get_session
+from .utils import parse_dt
 
 
 def load_state():
@@ -75,22 +75,6 @@ def purge_old_thumbs():
             pass
 
 
-def _parse_dt(ts_str):
-    """Parse an ISO or RFC 2822 timestamp (RSS vs API formats) into an aware datetime."""
-    if not ts_str:
-        return None
-    try:
-        try:
-            dt = parsedate_to_datetime(ts_str)
-        except Exception:
-            dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
-    except Exception:
-        return None
-
-
 def compute_stats(mods):
     """Summarize the full mod-tracking history (self.state["mods"]) for the stats view.
 
@@ -110,7 +94,7 @@ def compute_stats(mods):
 
     for mod in mods.values():
         author = mod.get("author") or "Unknown"
-        published = _parse_dt(mod.get("published", ""))
+        published = parse_dt(mod.get("published", ""))
         in_window = published and published >= window_start
         if in_window:
             author_counts[author] += 1

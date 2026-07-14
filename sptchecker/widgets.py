@@ -3,14 +3,14 @@ import threading
 import tkinter as tk
 import tkinter.font as tkfont
 import webbrowser
-from datetime import datetime, timezone, timedelta
-from email.utils import parsedate_to_datetime
+from datetime import datetime, timezone
 
 from .config import (
     ACCENT_NEW, ACCENT_NEW_AUTHOR, ACCENT_UPD, BG, CARD_BG, CARD_HOVER,
     FORGE_USER_URL, NEW_AUTHOR_DAYS, SEPARATOR, STATUS_BG, TEXT_BRIGHT, TEXT_DIM,
 )
 from .feed import fetch_author_id
+from .utils import parse_dt
 
 class ContextMenu(tk.Toplevel):
     """Styled frameless context menu matching the dark theme."""
@@ -430,25 +430,9 @@ class StatsWindow(FramelessPopup):
             webbrowser.open(fallback_link)
 
 
-def _parse_ts(ts_str):
-    """Parse an ISO or RFC 2822 timestamp (RSS vs API formats) into an aware datetime."""
-    if not ts_str:
-        return None
-    try:
-        try:
-            dt = parsedate_to_datetime(ts_str)
-        except Exception:
-            dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
-    except Exception:
-        return None
-
-
 def _relative_time(ts_str):
     """Convert an ISO or RFC 2822 timestamp to a relative string."""
-    dt = _parse_ts(ts_str)
+    dt = parse_dt(ts_str)
     if dt is None:
         return ""
     s = (datetime.now(timezone.utc) - dt).total_seconds()
@@ -465,7 +449,7 @@ def _relative_time(ts_str):
 
 
 def _is_new_author(author_since):
-    dt = _parse_ts(author_since)
+    dt = parse_dt(author_since)
     if dt is None:
         return False
     age_days = (datetime.now(timezone.utc) - dt).total_seconds() / 86400
