@@ -4,7 +4,9 @@ import xml.etree.ElementTree as ET
 
 import requests
 
-from .config import API_URL, DC_NS, FEED_URL, FEED_UPDATED_URL
+from .config import API_MOD_URL, API_URL, DC_NS, FEED_URL, FEED_UPDATED_URL
+
+_MOD_ID_RE = re.compile(r"/mod/(\d+)/")
 
 _session = requests.Session()
 _session.headers["User-Agent"] = "SPTModChecker/2.0"
@@ -57,6 +59,8 @@ def _fetch_api_mods(sort="-updated_at"):
                 "title": item.get("name", ""),
                 "link": item.get("detail_url", ""),
                 "author": owner.get("name", "Unknown"),
+                "author_id": owner.get("id", ""),
+                "author_since": owner.get("created_at", ""),
                 "version": latest.get("version", ""),
                 "category": category.get("title", ""),
                 "published": item.get("published_at", ""),
@@ -115,6 +119,26 @@ def check_mod_published(url):
         return True
 
 
+def fetch_author_id(mod_link):
+    """On-demand lookup of a mod's owner id from its page link.
+
+    Used to backfill an author's Forge profile id when it wasn't captured during
+    a regular check -- e.g. an older mod that hasn't cycled back through the
+    "most recent" API window since author_id started being tracked. Returns None
+    on any failure (bad link, network error, missing owner).
+    """
+    m = _MOD_ID_RE.search(mod_link)
+    if not m:
+        return None
+    try:
+        resp = _session.get(f"{API_MOD_URL}/{m.group(1)}", headers=_API_HEADERS, timeout=15)
+        resp.raise_for_status()
+        owner = resp.json().get("data", {}).get("owner") or {}
+        return owner.get("id")
+    except Exception:
+        return None
+
+
 def fetch_feeds():
     """Fetch newest and recently updated mods from RSS feeds + API."""
     api_updated = _fetch_api_mods(sort="-updated_at")
@@ -123,15 +147,21 @@ def fetch_feeds():
     newest = _extract_mods(_parse_rss(FEED_URL))
     rss_updated = _extract_mods(_parse_rss(FEED_UPDATED_URL))
 
-    # Build changelog + full_description lookup from both API sets
+    # RSS entries lack several API-only fields -- build per-link lookups from the
+    # API sets and enrich both columns, whichever source each entry came from.
     all_api = {m["link"]: m for m in api_updated + api_newest}
-    changelogs = {link: m["changelog"] for link, m in all_api.items() if m.get("changelog")}
-    full_descs = {link: m["full_description"] for link, m in all_api.items() if m.get("full_description")}
+    enrich_fields = ("changelog", "full_description", "author_since", "author_id")
+    lookups = {
+        field: {link: m[field] for link, m in all_api.items() if m.get(field)}
+        for field in enrich_fields
+    }
 
-    # Enrich new mods with API changelogs
+    def _enrich(mod):
+        for field in enrich_fields:
+            mod[field] = mod.get(field) or lookups[field].get(mod["link"], "")
+
     for mod in newest:
-        mod["changelog"] = mod.get("changelog") or changelogs.get(mod["link"], "")
-        mod["full_description"] = mod.get("full_description") or full_descs.get(mod["link"], "")
+        _enrich(mod)
 
     # Combine RSS + API for updated column, deduplicate, sort by version created_at
     seen = set()
@@ -141,8 +171,7 @@ def fetch_feeds():
             seen.add(mod["link"])
             combined.append(mod)
     for mod in combined:
-        mod["changelog"] = mod.get("changelog") or changelogs.get(mod["link"], "")
-        mod["full_description"] = mod.get("full_description") or full_descs.get(mod["link"], "")
+        _enrich(mod)
     combined.sort(key=lambda m: m.get("updated", ""), reverse=True)
 
     return newest, combined
