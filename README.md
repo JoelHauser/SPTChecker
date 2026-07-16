@@ -10,7 +10,7 @@ A lightweight Windows desktop app that monitors the [SPT Forge](https://forge.sp
 
 ### What it does
 
-SPT Mod Checker runs quietly in your system tray and checks the Forge on a configurable interval (5–60 minutes, default 20) for changes. When it finds something, it sends a Windows toast notification and updates the UI — no need to manually browse the Forge to stay up to date.
+SPT Mod Checker runs quietly in your system tray and checks the Forge every 5 minutes for changes. When it finds something, it sends a Windows toast notification and updates the UI — no need to manually browse the Forge to stay up to date.
 
 ---
 
@@ -18,7 +18,7 @@ SPT Mod Checker runs quietly in your system tray and checks the Forge on a confi
 
 1. On first launch, the app populates both columns — **New Mods** from the Forge RSS feed and **Recently Updated** mirroring the website's "Recently Updated" tab.
 2. Both columns use the Forge RSS feeds and API — **no HTML scraping**.
-3. At the configured interval, it re-fetches and compares against stored state.
+3. Every 5 minutes, it re-fetches and compares against stored state.
 4. New mod URLs are flagged as **New**. The Recently Updated column mirrors the Forge website in real time.
 5. If a mod author unpublishes their mod, it is automatically removed from the display.
 6. Results persist across checks and restarts — new findings push older entries down in a rolling history (up to 7 per column).
@@ -36,7 +36,7 @@ SPT Mod Checker runs quietly in your system tray and checks the Forge on a confi
 - **Hover-scrolling** — Hover over any card to smoothly scroll truncated text and read the full details
 - **Click to open** — Click any card to open the mod page directly on the Forge
 - **Right-click menu** — Right-click any card for quick options to open on Forge or copy the link
-- **Adjustable interval** — Slider in the status bar to control check frequency, saved across restarts
+- **Stats window** — Click **Stats** to see total mods tracked, mods added this week, and the top 5 authors/categories by activity in the last 30 days (rolls forward automatically, no manual reset)
 - **Window size memory** — The app remembers and restores its window size between sessions
 - **Dark theme** — Styled to match the SPT aesthetic
 
