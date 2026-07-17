@@ -39,6 +39,7 @@ DISPLAY_FIELDS = (
 THUMB_MAX_AGE_DAYS = 3
 NEW_AUTHOR_DAYS = 60
 TOP_STATS_WINDOW_DAYS = 30
+TREND_WINDOW_DAYS = 30
 
 # ── Window ─────────────────────────────────────────────────────────────
 

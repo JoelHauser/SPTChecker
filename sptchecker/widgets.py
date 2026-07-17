@@ -5,9 +5,12 @@ import tkinter.font as tkfont
 import webbrowser
 from datetime import datetime, timezone
 
+from PIL import Image, ImageDraw, ImageTk
+
 from .config import (
     ACCENT_NEW, ACCENT_NEW_AUTHOR, ACCENT_UPD, BG, CARD_BG, CARD_HOVER,
     FORGE_USER_URL, NEW_AUTHOR_DAYS, SEPARATOR, STATUS_BG, TEXT_BRIGHT, TEXT_DIM,
+    TREND_WINDOW_DAYS,
 )
 from .feed import fetch_author_id
 from .utils import parse_dt
@@ -245,8 +248,11 @@ class FramelessPopup(tk.Toplevel):
         parent.update_idletasks()
         px, py = parent.winfo_rootx(), parent.winfo_rooty()
         pw, ph = parent.winfo_width(), parent.winfo_height()
-        x = max(0, px + (pw - self.WIDTH) // 2)
-        y = max(0, py + (ph - self.HEIGHT) // 2)
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        x = px + (pw - self.WIDTH) // 2
+        y = py + (ph - self.HEIGHT) // 2
+        x = max(0, min(x, sw - self.WIDTH))
+        y = max(0, min(y, sh - self.HEIGHT))
         self.geometry(f"{self.WIDTH}x{self.HEIGHT}+{x}+{y}")
 
     def _start_move(self, e):
@@ -322,6 +328,42 @@ class ChangeNotesWindow(FramelessPopup):
         self._finish_show()
 
 
+def _blend(fg_hex, bg_hex, alpha):
+    """Mix fg over bg at the given alpha -- Tk fills are opaque, so translucency
+    (e.g. a soft area-chart fill) has to be pre-baked into a solid color."""
+    fg = tuple(int(fg_hex[i:i + 2], 16) for i in (1, 3, 5))
+    bg = tuple(int(bg_hex[i:i + 2], 16) for i in (1, 3, 5))
+    mixed = tuple(round(bg[j] + (fg[j] - bg[j]) * alpha) for j in range(3))
+    return "#%02x%02x%02x" % mixed
+
+
+def _format_day(iso_date):
+    return datetime.strptime(iso_date, "%Y-%m-%d").strftime("%b %d")
+
+
+def _catmull_rom(points, segments=8):
+    """Interpolate a smooth curve through points -- Pillow draws straight
+    segments only, so this replaces the softening Tk's smooth=True used to do."""
+    if len(points) < 3:
+        return points
+    pts = [points[0]] + points + [points[-1]]
+    out = []
+    for i in range(1, len(pts) - 2):
+        p0, p1, p2, p3 = pts[i - 1], pts[i], pts[i + 1], pts[i + 2]
+        for s in range(segments):
+            t = s / segments
+            t2, t3 = t * t, t * t * t
+            x = 0.5 * (2 * p1[0] + (-p0[0] + p2[0]) * t +
+                       (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2 +
+                       (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3)
+            y = 0.5 * (2 * p1[1] + (-p0[1] + p2[1]) * t +
+                       (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2 +
+                       (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3)
+            out.append((x, y))
+    out.append(points[-1])
+    return out
+
+
 class StatsWindow(FramelessPopup):
     """Popup showing a summary of the full mod-tracking history."""
 
@@ -359,7 +401,9 @@ class StatsWindow(FramelessPopup):
                  fg=TEXT_BRIGHT, bg=BG, anchor="w").pack(fill="x", padx=16, pady=(16, 0))
         tk.Label(inner, text=f"{stats['added_this_week']} added in the last 7 days",
                  font=("Segoe UI", 9), fg=TEXT_DIM, bg=BG, anchor="w").pack(
-            fill="x", padx=16, pady=(2, 14))
+            fill="x", padx=16, pady=(2, 10))
+
+        self._build_trend(inner, stats.get("daily_counts", []), stats.get("daily_dates", []))
 
         self._build_section(inner, "Top Authors (Last 30 Days)", stats["top_authors"], "mod",
                             link_ids=stats.get("author_ids"), link_fallback=stats.get("author_links"))
@@ -369,9 +413,9 @@ class StatsWindow(FramelessPopup):
 
     @staticmethod
     def _update_scrollbar(canvas, scrollbar):
-        canvas.configure(scrollregion=canvas.bbox("all"))
         canvas.update_idletasks()
         bbox = canvas.bbox("all")
+        canvas.configure(scrollregion=bbox)
         content_h = (bbox[3] - bbox[1]) if bbox else 0
         if content_h > canvas.winfo_height():
             if not scrollbar.winfo_ismapped():
@@ -379,6 +423,95 @@ class StatsWindow(FramelessPopup):
                 scrollbar.update_idletasks()
         elif scrollbar.winfo_ismapped():
             scrollbar.pack_forget()
+
+    def _build_trend(self, parent, daily_counts, daily_dates):
+        if not daily_counts:
+            return
+        tk.Label(parent, text=f"ADDED PER DAY (LAST {TREND_WINDOW_DAYS} DAYS)",
+                 font=("Segoe UI", 8, "bold"), fg=TEXT_DIM, bg=BG, anchor="w").pack(
+            fill="x", padx=16, pady=(0, 2))
+
+        height = 64
+        pad_top, pad_bottom = 8, 8
+        spark = tk.Canvas(parent, bg=CARD_BG, height=height, highlightthickness=0)
+        spark.pack(fill="x", padx=16, pady=(0, 14))
+
+        peak = max(daily_counts) or 1
+        n = len(daily_counts)
+        fill_color = _blend(ACCENT_NEW, CARD_BG, 0.22)
+        layout = {}
+
+        def draw(_e=None):
+            spark.delete("all")
+            w = spark.winfo_width()
+            if w < 2 or n < 2:
+                return
+            usable_h = height - pad_top - pad_bottom
+            step = w / (n - 1)
+            points = [
+                (i * step, pad_top + usable_h - (count / peak) * usable_h)
+                for i, count in enumerate(daily_counts)
+            ]
+            layout["points"] = points
+            layout["step"] = step
+
+            baseline = height - pad_bottom
+            smooth_pts = _catmull_rom(points)
+
+            # Tk's canvas has no anti-aliasing, so a 2px diagonal line comes out
+            # visibly stair-stepped. Render the curve at 4x with Pillow and
+            # downsample -- the resample filter does the anti-aliasing for free.
+            SS = 4
+            img = Image.new("RGB", (w * SS, height * SS), CARD_BG)
+            idraw = ImageDraw.Draw(img)
+            idraw.line([(0, baseline * SS), (w * SS, baseline * SS)], fill=SEPARATOR, width=SS)
+
+            ss_pts = [(x * SS, y * SS) for x, y in smooth_pts]
+            area_pts = [(points[0][0] * SS, baseline * SS), *ss_pts,
+                       (points[-1][0] * SS, baseline * SS)]
+            idraw.polygon(area_pts, fill=fill_color)
+            idraw.line(ss_pts, fill=ACCENT_NEW, width=2 * SS, joint="curve")
+
+            img = img.resize((w, height), Image.LANCZOS)
+            layout["photo"] = ImageTk.PhotoImage(img)
+            spark.create_image(0, 0, anchor="nw", image=layout["photo"])
+
+        spark.bind("<Configure>", draw)
+
+        hover_items = []
+
+        def clear_hover():
+            for item in hover_items:
+                spark.delete(item)
+            hover_items.clear()
+
+        def on_motion(e):
+            points = layout.get("points")
+            if not points:
+                return
+            idx = max(0, min(n - 1, round(e.x / layout["step"])))
+            x, y = points[idx]
+            clear_hover()
+            w = spark.winfo_width()
+
+            hover_items.append(spark.create_line(x, 0, x, height, fill=SEPARATOR, dash=(2, 2)))
+            hover_items.append(spark.create_oval(x - 3, y - 3, x + 3, y + 3,
+                                                 fill=ACCENT_NEW, outline=CARD_BG, width=1))
+
+            count = daily_counts[idx]
+            label = f"{_format_day(daily_dates[idx])}  •  {count} mod{'' if count == 1 else 's'}"
+            text_x = min(max(x, 44), max(44, w - 44))
+            text_y = 9 if y > 18 else height - 9
+            tid = spark.create_text(text_x, text_y, text=label, fill=TEXT_BRIGHT,
+                                    font=("Segoe UI", 7))
+            bbox = spark.bbox(tid)
+            rid = spark.create_rectangle(bbox[0] - 4, bbox[1] - 2, bbox[2] + 4, bbox[3] + 2,
+                                         fill=STATUS_BG, outline="")
+            spark.tag_raise(tid, rid)
+            hover_items.extend([rid, tid])
+
+        spark.bind("<Motion>", on_motion)
+        spark.bind("<Leave>", lambda _e: clear_hover())
 
     def _build_section(self, parent, heading, entries, unit, link_ids=None, link_fallback=None):
         tk.Label(parent, text=heading.upper(), font=("Segoe UI", 8, "bold"),

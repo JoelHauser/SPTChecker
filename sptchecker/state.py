@@ -9,7 +9,7 @@ from PIL import Image
 
 from .config import (
     CACHE_DIR, CARD_BG, DATA_DIR, STATE_FILE, THUMB_MAX_AGE_DAYS, THUMB_SIZE,
-    TOP_STATS_WINDOW_DAYS,
+    TOP_STATS_WINDOW_DAYS, TREND_WINDOW_DAYS,
 )
 from .feed import get_session
 from .utils import parse_dt
@@ -89,8 +89,15 @@ def compute_stats(mods):
     category_counts = Counter()
     added_this_week = 0
     now = datetime.now(timezone.utc)
+    today = now.date()
     week_ago = now - timedelta(days=7)
     window_start = now - timedelta(days=TOP_STATS_WINDOW_DAYS)
+    # Oldest day first, today last -- daily_counts[-1] is always today's count.
+    daily_counts = [0] * TREND_WINDOW_DAYS
+    daily_dates = [
+        (today - timedelta(days=TREND_WINDOW_DAYS - 1 - i)).isoformat()
+        for i in range(TREND_WINDOW_DAYS)
+    ]
 
     for mod in mods.values():
         author = mod.get("author") or "Unknown"
@@ -109,6 +116,10 @@ def compute_stats(mods):
             category_counts[category] += 1
         if published and published >= week_ago:
             added_this_week += 1
+        if published:
+            age_days = (today - published.date()).days
+            if 0 <= age_days < TREND_WINDOW_DAYS:
+                daily_counts[TREND_WINDOW_DAYS - 1 - age_days] += 1
 
     return {
         "total": len(mods),
@@ -117,4 +128,6 @@ def compute_stats(mods):
         "author_ids": author_ids,
         "author_links": author_links,
         "top_categories": category_counts.most_common(5),
+        "daily_counts": daily_counts,
+        "daily_dates": daily_dates,
     }
