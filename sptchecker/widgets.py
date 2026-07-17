@@ -5,6 +5,8 @@ import tkinter.font as tkfont
 import webbrowser
 from datetime import datetime, timezone
 
+from PIL import Image, ImageDraw, ImageTk
+
 from .config import (
     ACCENT_NEW, ACCENT_NEW_AUTHOR, ACCENT_UPD, BG, CARD_BG, CARD_HOVER,
     FORGE_USER_URL, NEW_AUTHOR_DAYS, SEPARATOR, STATUS_BG, TEXT_BRIGHT, TEXT_DIM,
@@ -246,8 +248,11 @@ class FramelessPopup(tk.Toplevel):
         parent.update_idletasks()
         px, py = parent.winfo_rootx(), parent.winfo_rooty()
         pw, ph = parent.winfo_width(), parent.winfo_height()
-        x = max(0, px + (pw - self.WIDTH) // 2)
-        y = max(0, py + (ph - self.HEIGHT) // 2)
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        x = px + (pw - self.WIDTH) // 2
+        y = py + (ph - self.HEIGHT) // 2
+        x = max(0, min(x, sw - self.WIDTH))
+        y = max(0, min(y, sh - self.HEIGHT))
         self.geometry(f"{self.WIDTH}x{self.HEIGHT}+{x}+{y}")
 
     def _start_move(self, e):
@@ -336,6 +341,29 @@ def _format_day(iso_date):
     return datetime.strptime(iso_date, "%Y-%m-%d").strftime("%b %d")
 
 
+def _catmull_rom(points, segments=8):
+    """Interpolate a smooth curve through points -- Pillow draws straight
+    segments only, so this replaces the softening Tk's smooth=True used to do."""
+    if len(points) < 3:
+        return points
+    pts = [points[0]] + points + [points[-1]]
+    out = []
+    for i in range(1, len(pts) - 2):
+        p0, p1, p2, p3 = pts[i - 1], pts[i], pts[i + 1], pts[i + 2]
+        for s in range(segments):
+            t = s / segments
+            t2, t3 = t * t, t * t * t
+            x = 0.5 * (2 * p1[0] + (-p0[0] + p2[0]) * t +
+                       (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2 +
+                       (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3)
+            y = 0.5 * (2 * p1[1] + (-p0[1] + p2[1]) * t +
+                       (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2 +
+                       (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3)
+            out.append((x, y))
+    out.append(points[-1])
+    return out
+
+
 class StatsWindow(FramelessPopup):
     """Popup showing a summary of the full mod-tracking history."""
 
@@ -385,9 +413,9 @@ class StatsWindow(FramelessPopup):
 
     @staticmethod
     def _update_scrollbar(canvas, scrollbar):
-        canvas.configure(scrollregion=canvas.bbox("all"))
         canvas.update_idletasks()
         bbox = canvas.bbox("all")
+        canvas.configure(scrollregion=bbox)
         content_h = (bbox[3] - bbox[1]) if bbox else 0
         if content_h > canvas.winfo_height():
             if not scrollbar.winfo_ismapped():
@@ -428,18 +456,25 @@ class StatsWindow(FramelessPopup):
             layout["step"] = step
 
             baseline = height - pad_bottom
-            spark.create_line(0, baseline, w, baseline, fill=SEPARATOR)
+            smooth_pts = _catmull_rom(points)
 
-            area_pts = [points[0][0], baseline]
-            for x, y in points:
-                area_pts.extend([x, y])
-            area_pts.extend([points[-1][0], baseline])
-            spark.create_polygon(area_pts, fill=fill_color, outline="",
-                                 smooth=True, splinesteps=12)
+            # Tk's canvas has no anti-aliasing, so a 2px diagonal line comes out
+            # visibly stair-stepped. Render the curve at 4x with Pillow and
+            # downsample -- the resample filter does the anti-aliasing for free.
+            SS = 4
+            img = Image.new("RGB", (w * SS, height * SS), CARD_BG)
+            idraw = ImageDraw.Draw(img)
+            idraw.line([(0, baseline * SS), (w * SS, baseline * SS)], fill=SEPARATOR, width=SS)
 
-            flat_pts = [c for pt in points for c in pt]
-            spark.create_line(*flat_pts, fill=ACCENT_NEW, width=2,
-                              smooth=True, splinesteps=12, joinstyle="round")
+            ss_pts = [(x * SS, y * SS) for x, y in smooth_pts]
+            area_pts = [(points[0][0] * SS, baseline * SS), *ss_pts,
+                       (points[-1][0] * SS, baseline * SS)]
+            idraw.polygon(area_pts, fill=fill_color)
+            idraw.line(ss_pts, fill=ACCENT_NEW, width=2 * SS, joint="curve")
+
+            img = img.resize((w, height), Image.LANCZOS)
+            layout["photo"] = ImageTk.PhotoImage(img)
+            spark.create_image(0, 0, anchor="nw", image=layout["photo"])
 
         spark.bind("<Configure>", draw)
 
