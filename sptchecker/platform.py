@@ -56,6 +56,25 @@ def set_dark_title_bar(window, show=True):
             window.deiconify()
 
 
+_DWMWA_TRANSITIONS_FORCEDISABLED = 3
+
+
+def disable_show_animation(window):
+    """Stop Windows from playing its fade/expand animation when the window
+    comes back from withdraw() -- that animation is what exposes an
+    unpainted white backbuffer for a frame or two before Tk's own dark-themed
+    repaint catches up, which is what looks like a "white flash" when
+    restoring from the tray."""
+    try:
+        hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
+        value = ctypes.c_int(1)
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(
+            hwnd, _DWMWA_TRANSITIONS_FORCEDISABLED, ctypes.byref(value), ctypes.sizeof(value)
+        )
+    except Exception:
+        pass
+
+
 # ── Startup registry ──────────────────────────────────────────────────
 
 

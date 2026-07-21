@@ -613,15 +613,19 @@ class LocalScanSettingsWindow(FramelessPopup):
 
         path_row = tk.Frame(self, bg=BG)
         path_row.pack(fill="x", padx=14, pady=(0, 2))
-        self._path_lbl = tk.Label(path_row, text=self._display_path(), font=("Segoe UI", 8),
-                                  fg=TEXT_DIM, bg=BG, anchor="w")
-        self._path_lbl.pack(side="left", fill="x", expand=True)
+        # Packed before the label (and without fill/expand) so it always
+        # claims its space first -- a long install path can no longer push
+        # it out past the edge of this fixed-width window the way it could
+        # when the label (which has no length limit) was packed first.
         tk.Button(
             path_row, text="Browse…", font=("Segoe UI", 8),
             bg=CARD_BG, fg=TEXT, activebackground=CARD_HOVER,
             activeforeground=TEXT_BRIGHT, relief="flat", padx=8, pady=2,
             cursor="hand2", command=self._browse,
         ).pack(side="right")
+        self._path_lbl = tk.Label(path_row, text=self._display_path(), font=("Segoe UI", 8),
+                                  fg=TEXT_DIM, bg=BG, anchor="w")
+        self._path_lbl.pack(side="left", fill="x", expand=True)
 
         self._validation_lbl = tk.Label(self, text="", font=("Segoe UI", 8), bg=BG, anchor="w")
         self._validation_lbl.pack(fill="x", padx=14, pady=(2, 10))
@@ -662,7 +666,15 @@ class LocalScanSettingsWindow(FramelessPopup):
         self._finish_show()
 
     def _display_path(self):
-        return self._spt_path or "No folder selected"
+        if not self._spt_path:
+            return "No folder selected"
+        # The tail of the path (e.g. the SPT folder's own name) is what
+        # actually identifies which install this is -- truncate from the
+        # front so a long path can't visually crowd out the Browse button.
+        max_len = 46
+        if len(self._spt_path) <= max_len:
+            return self._spt_path
+        return "…" + self._spt_path[-(max_len - 1):]
 
     def _toggle(self):
         enabled = self._enabled_var.get()
@@ -670,9 +682,17 @@ class LocalScanSettingsWindow(FramelessPopup):
         self._update_validation()
 
     def _browse(self):
+        # This popup is frameless (overrideredirect), so it can fall behind
+        # the main window once the native folder picker closes -- lift() +
+        # focus_force() puts it back above the main window specifically.
+        # Deliberately NOT using -topmost here: that would keep it above
+        # the folder picker too while it's open, forcing the user to drag
+        # the picker out from under our popup just to see their folders.
         chosen = filedialog.askdirectory(
             parent=self, initialdir=self._spt_path or None, title="Select your SPT install folder",
         )
+        self.lift()
+        self.focus_force()
         if not chosen:
             return
         self._spt_path = chosen

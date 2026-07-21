@@ -19,8 +19,9 @@ from .feed import check_mod_published, fetch_feeds
 from .localmods import scan_installed_mods
 from .matcher import match_local_mods
 from .platform import (
-    badge_icon, is_startup_enabled, load_app_icon, refresh_startup_if_stale,
-    send_toast, set_dark_title_bar, set_dpi_aware, set_startup_enabled,
+    badge_icon, disable_show_animation, is_startup_enabled, load_app_icon,
+    refresh_startup_if_stale, send_toast, set_dark_title_bar, set_dpi_aware,
+    set_startup_enabled,
 )
 from .state import (
     compute_stats, download_thumb, load_state, placeholder_thumb, purge_old_thumbs, save_state,
@@ -70,6 +71,7 @@ class SPTCheckerApp:
         self.root.minsize(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
 
         set_dark_title_bar(self.root, show=not start_hidden)
+        disable_show_animation(self.root)
 
         self._app_icon = load_app_icon()
         self._icon_photo = ImageTk.PhotoImage(self._app_icon.resize((32, 32), Image.LANCZOS))
@@ -80,6 +82,9 @@ class SPTCheckerApp:
         self._scanning = False
         self._local_scan_window = None
         self._next_check_ts = None
+        self._timer_after_id = None
+        self._new_sig = None
+        self._upd_sig = None
         self._tray = None
         self._unread_count = 0
         self._visible = not start_hidden
@@ -302,6 +307,10 @@ class SPTCheckerApp:
     # ── Local mod scan (opt-in) ───────────────────────────────────────
 
     def _show_local_scan(self):
+        if self._local_scan_window and self._local_scan_window.winfo_exists():
+            self._local_scan_window.lift()
+            self._local_scan_window.focus_force()
+            return
         self._local_scan_window = LocalScanSettingsWindow(
             self.root,
             enabled=self.state.get("local_scan_enabled", False),
@@ -398,8 +407,17 @@ class SPTCheckerApp:
 
     def _do_show(self):
         self._visible = True
+        # Windows reveals the window the instant deiconify() runs, before Tk
+        # has actually painted every widget -- update_idletasks() alone isn't
+        # enough to beat that, since the reveal doesn't wait on paint
+        # completion. Staying fully transparent until a full update() forces
+        # every widget to finish painting means there's nothing left to
+        # progressively fill in once we make it visible.
+        self.root.attributes("-alpha", 0.0)
         self.root.deiconify()
         self.root.state("normal")
+        self.root.update()
+        self.root.attributes("-alpha", 1.0)
         self.root.lift()
         self.root.focus_force()
         self._clear_unread()
@@ -532,18 +550,38 @@ class SPTCheckerApp:
         total = len(self.state.get("mods", {}))
 
         if display_new:
-            self._fill_column(self._new_frame, display_new)
+            new_sig = self._column_signature(display_new)
+            if new_sig != self._new_sig:
+                self._fill_column(self._new_frame, display_new)
+                self._new_sig = new_sig
+            else:
+                # Nothing actually changed since last render -- skip destroying
+                # and rebuilding every card just to show the exact same thing,
+                # which is what caused the visible "flash" on reopen after the
+                # window had been hidden past a check interval.
+                for m in display_new:
+                    m.pop("_pil", None)
         elif first_run:
             self._set_placeholder(self._new_frame, "Baseline set — monitoring for new mods…")
+            self._new_sig = None
         else:
             self._set_placeholder(self._new_frame, "No new mods detected yet.")
+            self._new_sig = None
 
         if display_upd:
-            self._fill_column(self._upd_frame, display_upd)
+            upd_sig = self._column_signature(display_upd)
+            if upd_sig != self._upd_sig:
+                self._fill_column(self._upd_frame, display_upd)
+                self._upd_sig = upd_sig
+            else:
+                for m in display_upd:
+                    m.pop("_pil", None)
         elif first_run:
             self._set_placeholder(self._upd_frame, "Baseline set — monitoring for updates…")
+            self._upd_sig = None
         else:
             self._set_placeholder(self._upd_frame, "No updates detected yet.")
+            self._upd_sig = None
 
         if first_run:
             self._lbl_status.configure(text=f"Baseline: {total} mods cataloged at {now}")
@@ -585,6 +623,16 @@ class SPTCheckerApp:
             card = ModCard(frame, mod, accent, photo)
             card.pack(fill="x", pady=2)
 
+    @staticmethod
+    def _column_signature(mods):
+        """Identifies what's actually rendered in a column -- if this hasn't
+        changed since last time, _apply skips the destroy/rebuild of every
+        card, which is what caused a visible flash on every check cycle
+        (including the one that fires as soon as you reopen the window after
+        it's been hidden past a check interval) even when nothing changed."""
+        return tuple((m["link"], m.get("version"), m.get("prev_version"), m.get("is_fresh"))
+                     for m in mods)
+
     # ── Timer ──────────────────────────────────────────────────────────
 
     def _schedule_next(self):
@@ -592,6 +640,14 @@ class SPTCheckerApp:
         self._tick_timer()
 
     def _tick_timer(self):
+        # _do_show calls this directly (in addition to whatever chain is
+        # already pending from before the window was hidden), so cancel any
+        # previously scheduled tick first -- otherwise repeated hide/show
+        # cycles stack up duplicate timer chains that never get cleaned up.
+        if self._timer_after_id is not None:
+            self.root.after_cancel(self._timer_after_id)
+            self._timer_after_id = None
+
         if self._next_check_ts is None:
             return
         left = max(0, int(self._next_check_ts - time.time()))
@@ -601,9 +657,9 @@ class SPTCheckerApp:
         if self._visible:
             m, s = divmod(left, 60)
             self._lbl_timer.configure(text=f"Next check in {m:02d}:{s:02d}")
-            self.root.after(1000, self._tick_timer)
+            self._timer_after_id = self.root.after(1000, self._tick_timer)
         else:
-            self.root.after(left * 1000, self._tick_timer)
+            self._timer_after_id = self.root.after(left * 1000, self._tick_timer)
 
     # ── Run ────────────────────────────────────────────────────────────
 
