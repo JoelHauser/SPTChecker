@@ -12,10 +12,11 @@ from .config import (
     ACCENT_NEW, ACCENT_NEW_AUTHOR, ACCENT_UPD, BG, CARD_BG, CARD_HOVER,
     CATEGORY_COLOR_DEFAULT, CATEGORY_COLORS,
     FORGE_USER_URL, NEW_AUTHOR_DAYS, SEPARATOR, STATUS_BG, TEXT, TEXT_BRIGHT, TEXT_DIM,
-    THUMB_SIZE, TREND_WINDOW_DAYS,
+    TREND_WINDOW_DAYS,
 )
 from .feed import fetch_author_id
 from .localmods import validate_spt_root
+from .state import placeholder_thumb
 from .utils import parse_dt
 
 class ContextMenu(tk.Toplevel):
@@ -577,7 +578,7 @@ def _local_scan_placeholder():
     aren't fetched from the Forge feed, so there's no thumbnail URL to use."""
     global _local_scan_placeholder_photo
     if _local_scan_placeholder_photo is None:
-        _local_scan_placeholder_photo = ImageTk.PhotoImage(Image.new("RGB", THUMB_SIZE, SEPARATOR))
+        _local_scan_placeholder_photo = ImageTk.PhotoImage(placeholder_thumb())
     return _local_scan_placeholder_photo
 
 
