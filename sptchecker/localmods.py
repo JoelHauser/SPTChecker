@@ -1,97 +1,79 @@
 import json
-import re
 from pathlib import Path
 
+from . import dotnet_meta as dm
 from .config import BEPINEX_PLUGINS_SUBPATH, LEGACY_SERVER_MODS_SUBPATH, SERVER_MODS_SUBPATH
 
-# .NET custom-attribute constructor args (e.g. BepInEx's BepInPlugin(guid, name, version))
-# are UTF-8 in the assembly's blob heap, so a plain ASCII scan finds them.
-_ASCII_STRING_RE = re.compile(rb"[\x20-\x7e]{4,}")
-# Object/record-initializer string literals (e.g. SPT v4 server mods' `new ModMetadata
-# { Guid = ..., ... }`) are `ldstr`-loaded from the UTF-16LE user-string heap instead.
-_UTF16_STRING_RE = re.compile(rb"(?:[\x20-\x7e]\x00){3,}")
-
-_GUID_RE = re.compile(r"^(?=.*[a-z])[a-z0-9_-]+(\.[a-z0-9_-]+){1,4}$")
-_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(\.\d+)?$")
-_SPT_VERSION_RE = re.compile(r"^[~^]\d+(\.\d+){1,2}(\.\d+)?$")
-# Dotted strings ending in a common file extension are filenames referenced in
-# code (e.g. "config.json"), not a mod's GUID -- same shape as a real 2-segment
-# GUID otherwise, so this can't be caught by the GUID regex alone.
-_FILE_EXTENSIONS = {
-    "json", "jsonc", "dll", "txt", "xml", "config", "png", "jpg", "jpeg",
-    "cs", "pdb", "ini", "yaml", "yml", "bundle", "db",
-}
-
-
-def _looks_like_guid(s):
-    return bool(_GUID_RE.match(s)) and s.rsplit(".", 1)[-1] not in _FILE_EXTENSIONS
-
 _MAX_SCAN_BYTES = 100 * 1024 * 1024
-_RECORD_WINDOW = 8
 
 
-def _ascii_strings(data):
-    return [m.group().decode("ascii") for m in _ASCII_STRING_RE.finditer(data)]
-
-
-def _utf16_strings(data):
-    return [m.group().decode("utf-16-le") for m in _UTF16_STRING_RE.finditer(data)]
-
-
-def _extract_attribute_style(data):
-    """BepInEx client plugins: find the (guid, name, version) triple that
-    BepInPlugin's constructor args leave adjacent in the blob heap."""
-    strings = _ascii_strings(data)
-    for i in range(len(strings) - 2):
-        guid, name, version = strings[i], strings[i + 1], strings[i + 2]
-        if (_looks_like_guid(guid) and _VERSION_RE.match(version)
-                and 0 < len(name) < 60 and "." not in name):
-            return {"guid": guid, "name": name, "version": version, "spt_version": None}
-    return None
-
-
-def _extract_record_style(data):
-    """SPT v4 server mods: find the ModMetadata object-initializer cluster.
-    Field order isn't guaranteed (varies mod to mod), so classify each string
-    in a small window by shape rather than assuming a fixed position.
-
-    The display name isn't reliably distinguishable from other nearby string
-    literals this way (too much false-positive noise from unrelated `ldstr`
-    values sitting in the same window) -- callers should use the mod's
-    folder name instead, which is always accurate.
-    """
-    strings = _utf16_strings(data)
-    for start in range(len(strings)):
-        window = strings[start:start + _RECORD_WINDOW]
-        guid = next((s for s in window if _looks_like_guid(s)), None)
-        version = next((s for s in window if _VERSION_RE.match(s)), None)
-        if not guid or not version:
-            continue
-        spt_version = next((s for s in window if _SPT_VERSION_RE.match(s)), None)
-        return {"guid": guid, "name": None, "version": version, "spt_version": spt_version}
-    return None
-
-
-def extract_mod_metadata(dll_path, mode):
-    """Best-effort, dependency-free extraction of a compiled mod's declared
-    guid/name/version from its raw bytes. Returns None on failure or
-    ambiguity rather than raising -- most DLLs in a plugins folder are
-    dependencies, not the plugin itself, and that's expected, not an error.
-    """
+def _load_assembly(dll_path):
     try:
         size = dll_path.stat().st_size
         if size == 0 or size > _MAX_SCAN_BYTES:
             return None
-        data = dll_path.read_bytes()
-    except OSError:
+        return dm.load(dll_path)
+    except (OSError, dm.MetadataError):
         return None
 
+
+def _extract_client_plugin(dll_path):
+    """BepInEx client plugins: resolve the BepInPlugin custom attribute by
+    its actual declaring type name (real assembly metadata, not a guess from
+    string shapes -- immune to case, unrelated adjacent attributes like
+    BepInDependency, etc.) and decode its 3 constructor string args."""
+    meta = _load_assembly(dll_path)
+    if meta is None:
+        return None
     try:
-        if mode == "attribute":
-            return _extract_attribute_style(data)
-        return _extract_record_style(data)
+        matches = [
+            meta.decode_fixed_string_args(blob, 3)
+            for name, _ns, blob in meta.custom_attributes()
+            if name == "BepInPlugin"
+        ]
     except Exception:
         return None
+    matches = [m for m in matches if m and all(m)]
+    if len(matches) != 1:
+        return None
+    guid, name, version = matches[0]
+    return {"guid": guid, "name": name, "version": version, "spt_version": None}
+
+
+def _extract_server_mod(dll_path):
+    """SPT v4 server mods: find the method that sets ModMetadata's Guid and
+    Version properties. Roslyn always lowers `new ModMetadata { Guid = ...,
+    Version = ... }` to the same dup/ldstr/call-setter IL shape regardless of
+    field order in source, so this reads the exact values assigned rather
+    than classifying nearby string literals by shape."""
+    meta = _load_assembly(dll_path)
+    if meta is None:
+        return None
+    try:
+        found = dm.find_property_set_cluster(
+            meta, required={"Guid", "Version"}, optional={"Name", "SptVersion"},
+        )
+    except Exception:
+        return None
+    if not found:
+        return None
+    return {
+        "guid": found.get("Guid"),
+        "name": found.get("Name"),
+        "version": found.get("Version"),
+        "spt_version": found.get("SptVersion"),
+    }
+
+
+def extract_mod_metadata(dll_path, mode):
+    """Best-effort extraction of a compiled mod's declared guid/name/version
+    from its real .NET assembly metadata. Returns None on failure or
+    ambiguity rather than raising -- most DLLs in a plugins folder are
+    dependencies, not the plugin itself, and that's expected, not an error.
+    """
+    if mode == "attribute":
+        return _extract_client_plugin(dll_path)
+    return _extract_server_mod(dll_path)
 
 
 def find_bepinex_plugins(spt_root):

@@ -95,7 +95,9 @@ def lookup_by_guid(guid):
         }, timeout=15)
         resp.raise_for_status()
         data = resp.json().get("data", [])
-        return _parse_api_mod(data[0]) if data else None
+        if len(data) != 1 or data[0].get("guid") != guid:
+            return None
+        return _parse_api_mod(data[0])
     except Exception:
         return None
 
