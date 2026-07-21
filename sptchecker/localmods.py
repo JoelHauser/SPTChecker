@@ -129,9 +129,10 @@ def validate_spt_root(path):
 
 
 def scan_installed_mods(spt_root):
-    """Scan an SPT install for locally installed mods. Returns a list of
-    records shaped per config.LOCAL_MOD_FIELDS; entries where extraction
-    failed are skipped rather than included with missing data."""
+    """Scan an SPT install for locally installed mods. Each record has
+    source/path/guid/name/version/spt_version (and author, for legacy
+    manifests only); entries where extraction failed are skipped rather
+    than included with missing data."""
     results = []
 
     for dll_path in find_bepinex_plugins(spt_root):

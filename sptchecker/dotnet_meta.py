@@ -38,6 +38,21 @@ def _u4(data, off):
     return struct.unpack_from("<I", data, off)[0]
 
 
+def _read_compressed_u32(buffer, off):
+    """ECMA-335 §24.2 compressed unsigned int -- used for blob/string/user-
+    string heap lengths, wherever the offset lands (the whole file's data,
+    or an already-sliced-out blob buffer)."""
+    b0 = buffer[off]
+    if b0 & 0x80 == 0:
+        return b0, off + 1
+    if b0 & 0xC0 == 0x80:
+        val = ((b0 & 0x3F) << 8) | buffer[off + 1]
+        return val, off + 2
+    val = ((b0 & 0x1F) << 24) | (buffer[off + 1] << 16) | \
+          (buffer[off + 2] << 8) | buffer[off + 3]
+    return val, off + 4
+
+
 def _u8(data, off):
     return struct.unpack_from("<Q", data, off)[0]
 
@@ -234,19 +249,8 @@ class AssemblyMetadata:
         if not heap or index == 0:
             return b""
         off = heap[0] + index
-        length, off = self._read_compressed_u32(off)
+        length, off = _read_compressed_u32(self._data, off)
         return self._data[off:off + length]
-
-    def _read_compressed_u32(self, off):
-        b0 = self._data[off]
-        if b0 & 0x80 == 0:
-            return b0, off + 1
-        if b0 & 0xC0 == 0x80:
-            val = ((b0 & 0x3F) << 8) | self._data[off + 1]
-            return val, off + 2
-        val = ((b0 & 0x1F) << 24) | (self._data[off + 1] << 16) | \
-              (self._data[off + 2] << 8) | self._data[off + 3]
-        return val, off + 4
 
     # ── #~ tables stream ────────────────────────────────────────────
     def _parse_tables_stream(self):
@@ -435,21 +439,10 @@ class AssemblyMetadata:
                 out.append(None)
                 off += 1
                 continue
-            length, off = self._read_compressed_u32_blob(blob, off)
+            length, off = _read_compressed_u32(blob, off)
             out.append(blob[off:off + length].decode("utf-8", errors="replace"))
             off += length
         return out
-
-    def _read_compressed_u32_blob(self, blob, off):
-        b0 = blob[off]
-        if b0 & 0x80 == 0:
-            return b0, off + 1
-        if b0 & 0xC0 == 0x80:
-            val = ((b0 & 0x3F) << 8) | blob[off + 1]
-            return val, off + 2
-        val = ((b0 & 0x1F) << 24) | (blob[off + 1] << 16) | \
-              (blob[off + 2] << 8) | blob[off + 3]
-        return val, off + 4
 
     # ── Method bodies (IL) ───────────────────────────────────────────
     def method_rva(self, method_row_idx):
@@ -478,16 +471,12 @@ class AssemblyMetadata:
         if not heap or index == 0:
             return ""
         off = heap[0] + index
-        length, off = self._read_compressed_u32(off)
+        length, off = _read_compressed_u32(self._data, off)
         if length == 0:
             return ""
         # UTF-16LE, minus the trailing single flag byte per ECMA-335 §24.2.4.
         text_len = (length - 1) // 2
         return self._data[off:off + text_len * 2].decode("utf-16-le", errors="replace")
-
-    def method_name(self, method_row_idx):
-        row = self.read_row(METHODDEF, method_row_idx)
-        return self._string_at(row[3]) if row else None
 
     def resolve_method_name(self, token):
         """Resolve a call/callvirt operand token (top byte = table, low 3

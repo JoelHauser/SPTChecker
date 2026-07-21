@@ -720,6 +720,13 @@ class LocalScanSettingsWindow(FramelessPopup):
         tk.Label(self._results_frame, text=text.upper(), font=("Segoe UI", 8, "bold"),
                  fg=TEXT_DIM, bg=BG, anchor="w").pack(fill="x", padx=14, pady=(10, 2))
 
+    def _open_all(self, links):
+        # Staggered rather than fired in a tight loop -- opening a dozen tabs
+        # in the same instant is what gets browsers/OS popup-blockers to
+        # start silently dropping some of them.
+        for i, link in enumerate(links):
+            self.after(i * 200, webbrowser.open, link)
+
     def _add_plain_row(self, text, link=None):
         row = tk.Label(self._results_frame, text=text, font=("Segoe UI", 9),
                        fg=TEXT_DIM, bg=BG, anchor="w", cursor="hand2" if link else "arrow")
@@ -747,7 +754,18 @@ class LocalScanSettingsWindow(FramelessPopup):
             fill="x", padx=14, pady=(10, 4), anchor="w")
 
         if updates:
-            self._add_section_header("Updates available")
+            header_row = tk.Frame(self._results_frame, bg=BG)
+            header_row.pack(fill="x", padx=14, pady=(10, 2))
+            tk.Label(header_row, text="UPDATES AVAILABLE", font=("Segoe UI", 8, "bold"),
+                     fg=TEXT_DIM, bg=BG, anchor="w").pack(side="left")
+            links = [r["forge"]["link"] for r in updates]
+            tk.Button(
+                header_row, text="Open All", font=("Segoe UI", 7),
+                bg=CARD_BG, fg=TEXT, activebackground=CARD_HOVER,
+                activeforeground=TEXT_BRIGHT, relief="flat", padx=6, pady=1,
+                cursor="hand2", command=lambda links=links: self._open_all(links),
+            ).pack(side="right")
+
             for r in updates:
                 local, forge = r["local"], r["forge"]
                 mod = {
