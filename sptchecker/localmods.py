@@ -1,10 +1,26 @@
 import json
+import re
 from pathlib import Path
 
 from . import dotnet_meta as dm
 from .config import BEPINEX_PLUGINS_SUBPATH, LEGACY_SERVER_MODS_SUBPATH, SERVER_MODS_SUBPATH
 
 _MAX_SCAN_BYTES = 100 * 1024 * 1024
+
+_GUID_RE = re.compile(r"^(?=.*[a-z])[a-z0-9_-]+(\.[a-z0-9_-]+){1,4}$", re.IGNORECASE)
+_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(\.\d+)?$")
+_SPT_VERSION_RE = re.compile(r"^[~^]\d+(\.\d+){1,2}(\.\d+)?$")
+# Dotted strings ending in a common file extension are filenames referenced in
+# code (e.g. "config.json"), not a mod's GUID -- same shape as a real 2-segment
+# GUID otherwise, so this can't be caught by the GUID regex alone.
+_FILE_EXTENSIONS = {
+    "json", "jsonc", "dll", "txt", "xml", "config", "png", "jpg", "jpeg",
+    "cs", "pdb", "ini", "yaml", "yml", "bundle", "db",
+}
+
+
+def _looks_like_guid(s):
+    return bool(_GUID_RE.match(s)) and s.rsplit(".", 1)[-1].lower() not in _FILE_EXTENSIONS
 
 
 def _load_assembly(dll_path):
@@ -41,28 +57,36 @@ def _extract_client_plugin(dll_path):
 
 
 def _extract_server_mod(dll_path):
-    """SPT v4 server mods: find the method that sets ModMetadata's Guid and
-    Version properties. Roslyn always lowers `new ModMetadata { Guid = ...,
-    Version = ... }` to the same dup/ldstr/call-setter IL shape regardless of
-    field order in source, so this reads the exact values assigned rather
-    than classifying nearby string literals by shape."""
+    """SPT v4 server mods: ModMetadata is built via a positional record
+    constructor (`new ModMetadata("guid", "name", ..., "license")`), which
+    Roslyn compiles to a flat run of `ldstr` pushes into one `call .ctor` --
+    not an object-initializer's dup/ldstr/call-setter pattern (real mods'
+    disassembly confirmed this; field order isn't consistent between mods
+    either, e.g. GUID first in some, last in others). So this collects each
+    constructor call's string arguments via dotnet_meta's generic IL scan,
+    then classifies them by shape rather than assuming a fixed position --
+    same approach the original byte-scan heuristic used, just scoped to real
+    ldstr literals from actual method bodies instead of raw file bytes,
+    which is far less prone to matching unrelated nearby strings.
+    """
     meta = _load_assembly(dll_path)
     if meta is None:
         return None
     try:
-        found = dm.find_property_set_cluster(
-            meta, required={"Guid", "Version"}, optional={"Name", "SptVersion"},
-        )
+        clusters = list(dm.iter_ctor_arg_strings(meta))
     except Exception:
         return None
-    if not found:
+
+    matches = []
+    for strings in clusters:
+        guid = next((s for s in strings if _looks_like_guid(s)), None)
+        version = next((s for s in strings if _VERSION_RE.match(s)), None)
+        if guid and version:
+            spt_version = next((s for s in strings if _SPT_VERSION_RE.match(s)), None)
+            matches.append({"guid": guid, "name": None, "version": version, "spt_version": spt_version})
+    if len(matches) != 1:
         return None
-    return {
-        "guid": found.get("Guid"),
-        "name": found.get("Name"),
-        "version": found.get("Version"),
-        "spt_version": found.get("SptVersion"),
-    }
+    return matches[0]
 
 
 def extract_mod_metadata(dll_path, mode):

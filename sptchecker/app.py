@@ -341,7 +341,11 @@ class SPTCheckerApp:
         try:
             spt_path = self.state.get("spt_install_path", "")
             local_mods = scan_installed_mods(spt_path)
-            results = match_local_mods(local_mods)
+            results = match_local_mods(
+                local_mods,
+                on_progress=lambda done, total: self.root.after(
+                    0, self._update_scan_progress, done, total),
+            )
             for r in results:
                 if r["update_available"]:
                     pil = download_thumb(r["forge"].get("thumb_url"))
@@ -381,6 +385,10 @@ class SPTCheckerApp:
         self._scanning = False
         if self._local_scan_window and self._local_scan_window.winfo_exists():
             self._local_scan_window.set_error(msg)
+
+    def _update_scan_progress(self, done, total):
+        if self._local_scan_window and self._local_scan_window.winfo_exists():
+            self._local_scan_window.set_progress(done, total)
 
     # ── System tray ────────────────────────────────────────────────────
 

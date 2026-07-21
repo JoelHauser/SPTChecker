@@ -1,5 +1,6 @@
 import html
 import re
+import time
 import xml.etree.ElementTree as ET
 
 import requests
@@ -16,6 +17,22 @@ _API_HEADERS = {"Accept": "application/json"}
 
 def get_session():
     return _session
+
+
+def _get_with_backoff(url, params, timeout, retries=3):
+    """GET with 429 (rate limit) backoff -- the local-mod scan can fire a
+    couple hundred lookups in a burst, comfortably over the Forge API's
+    per-window limit, and a silently-swallowed 429 looks identical to a
+    real "not found" to the caller (matcher.py) without this."""
+    resp = _session.get(url, headers=_API_HEADERS, params=params, timeout=timeout)
+    for _ in range(retries):
+        if resp.status_code != 429:
+            break
+        wait = float(resp.headers.get("Retry-After", 2))
+        time.sleep(wait)
+        resp = _session.get(url, headers=_API_HEADERS, params=params, timeout=timeout)
+    resp.raise_for_status()
+    return resp
 
 
 def strip_html(raw):
@@ -48,6 +65,7 @@ def _parse_api_mod(item):
 
     return {
         "title": item.get("name", ""),
+        "slug": item.get("slug", ""),
         "link": item.get("detail_url", ""),
         "guid": item.get("guid", ""),
         "author": owner.get("name", "Unknown"),
@@ -89,11 +107,10 @@ def lookup_by_guid(guid):
     if not guid:
         return None
     try:
-        resp = _session.get(API_URL, headers=_API_HEADERS, params={
+        resp = _get_with_backoff(API_URL, {
             "include": "versions,category",
             "filter[guid]": guid,
         }, timeout=15)
-        resp.raise_for_status()
         data = resp.json().get("data", [])
         if len(data) != 1 or data[0].get("guid") != guid:
             return None
@@ -111,12 +128,35 @@ def lookup_by_name(name):
     if not name:
         return []
     try:
-        resp = _session.get(API_URL, headers=_API_HEADERS, params={
+        resp = _get_with_backoff(API_URL, {
             "include": "versions,category",
             "filter[name]": name,
             "per_page": 20,
         }, timeout=15)
-        resp.raise_for_status()
+        return [_parse_api_mod(item) for item in resp.json().get("data", [])]
+    except Exception:
+        return []
+
+
+def lookup_by_query(term):
+    """Fuzzy/full-text search, for local mods filter[name] can't find.
+
+    filter[name] only matches a term that's a literal substring of the
+    stored title -- it can't bridge a local mod's internal name (often
+    camelCase/dotted developer shorthand) to a differently-worded Forge
+    listing. `query=` is a separate, undocumented parameter (found by
+    reading Refringe's Check Mods CLI source, confirmed live) that does
+    real fuzzy matching instead, at the cost of returning looser candidates
+    -- callers still need to rank results themselves, same as lookup_by_name.
+    """
+    if not term:
+        return []
+    try:
+        resp = _get_with_backoff(API_URL, {
+            "include": "versions,category",
+            "query": term,
+            "per_page": 20,
+        }, timeout=15)
         return [_parse_api_mod(item) for item in resp.json().get("data", [])]
     except Exception:
         return []

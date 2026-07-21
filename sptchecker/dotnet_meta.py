@@ -543,55 +543,40 @@ def _il_instructions(il):
         yield op, operand
 
 
-def scan_property_setters(meta, method_row_idx, wanted_setters):
-    """Walk one method body's IL for the `dup / ldstr <str> / call set_X`
-    pattern Roslyn emits for C# object-initializer syntax (`new T { X = ... }`),
-    and return {property_name: string_value} for whichever of `wanted_setters`
-    it finds. Best-effort: relies on this being a stable compiler lowering,
-    not general data-flow analysis."""
-    il = meta.method_il_bytes(method_row_idx)
-    if not il:
-        return {}
+def iter_ctor_arg_strings(meta):
+    """Walk every method body; whenever a call/callvirt resolves to a method
+    named `.ctor`, yield the `ldstr` string literals accumulated since the
+    last such call in the same method body, then reset for the next one.
 
-    found = {}
-    pending_string = None
-    for op, operand in _il_instructions(il):
-        if op == LDSTR:
-            token = struct.unpack("<I", operand)[0]
-            index = token & 0x00FFFFFF
-            pending_string = meta.user_string_at(index)
-        elif op in (CALL, CALLVIRT):
-            if pending_string is not None:
-                token = struct.unpack("<I", operand)[0]
-                name = meta.resolve_method_name(token)
-                if name and name.startswith("set_"):
-                    prop = name[4:]
-                    if prop in wanted_setters:
-                        found[prop] = pending_string
-            pending_string = None
-        elif op != DUP:
-            pending_string = None
-    return found
-
-
-def find_property_set_cluster(meta, required, optional=()):
-    """Scan every method body in the assembly for the dup/ldstr/call-setter
-    pattern, looking for one method that sets all of `required` (e.g. Guid
-    and Version). Returns the matched dict, or None if zero or more than one
-    method qualifies -- ambiguity means skipping rather than guessing which
-    one is the real mod metadata."""
-    wanted = set(required) | set(optional)
-    matches = []
+    This is for positional-constructor object construction (`new T("a", "b")`),
+    which Roslyn compiles to a flat run of `ldstr` pushes into one `call
+    .ctor` -- as opposed to object-initializer syntax (`new T { X = "a" }`),
+    which instead emits a `dup`/`ldstr`/`call set_X` pattern per property.
+    Only an actual `.ctor` call flushes the buffer, so non-string constructor
+    arguments built via other calls in between (e.g. an array literal) don't
+    split a single constructor's string arguments across two yields.
+    """
     for row_idx in range(1, meta.row_count(METHODDEF) + 1):
         try:
-            found = scan_property_setters(meta, row_idx, wanted)
+            il = meta.method_il_bytes(row_idx)
         except (IndexError, struct.error):
             continue
-        if all(key in found for key in required):
-            matches.append(found)
-    if len(matches) == 1:
-        return matches[0]
-    return None
+        if not il:
+            continue
+        buffer = []
+        try:
+            for op, operand in _il_instructions(il):
+                if op == LDSTR:
+                    token = struct.unpack("<I", operand)[0]
+                    buffer.append(meta.user_string_at(token & 0x00FFFFFF))
+                elif op in (CALL, CALLVIRT):
+                    token = struct.unpack("<I", operand)[0]
+                    if meta.resolve_method_name(token) == ".ctor":
+                        if buffer:
+                            yield buffer
+                        buffer = []
+        except (IndexError, struct.error):
+            continue
 
 
 def load(dll_path):

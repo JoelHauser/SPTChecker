@@ -638,8 +638,22 @@ class LocalScanSettingsWindow(FramelessPopup):
         )
         self._scan_btn.pack(padx=14, pady=(0, 10), anchor="w")
 
+        # Progress bar -- hidden until a scan is actually running (see
+        # set_progress); packed/unpacked rather than left empty so it takes
+        # zero space between scans instead of leaving an odd gap.
+        self._progress_frac = 0.0
+        self._progress_frame = tk.Frame(self, bg=BG)
+        self._progress_lbl = tk.Label(self._progress_frame, text="", font=("Segoe UI", 8),
+                                      fg=TEXT_DIM, bg=BG, anchor="w")
+        self._progress_lbl.pack(fill="x", pady=(0, 3))
+        self._progress_canvas = tk.Canvas(self._progress_frame, height=6, bg=CARD_BG,
+                                          highlightthickness=0)
+        self._progress_canvas.pack(fill="x")
+        self._progress_canvas.bind("<Configure>", lambda _e: self._draw_progress())
+
         # Scrollable results area, same canvas+scrollbar shape as StatsWindow.
         container = tk.Frame(self, bg=BG)
+        self._container = container
         container.pack(fill="both", expand=True, padx=0, pady=(0, 14))
 
         canvas = tk.Canvas(container, bg=BG, highlightthickness=0)
@@ -715,7 +729,8 @@ class LocalScanSettingsWindow(FramelessPopup):
 
     def _scan_now(self):
         self._scan_btn.configure(state="disabled", text="Scanning…")
-        self._set_message("Scanning installed mods and checking the Forge…")
+        self._set_message("Scanning your mod folders…")
+        self._show_progress()
         self._on_scan_now()
 
     def _clear_results(self):
@@ -730,15 +745,69 @@ class LocalScanSettingsWindow(FramelessPopup):
             fill="x", padx=14, pady=10, anchor="w")
 
     def set_scanning(self):
-        self._set_message("Scanning installed mods and checking the Forge…")
+        self._set_message("Scanning your mod folders…")
+        self._show_progress()
 
     def set_error(self, msg):
         self._scan_btn.configure(state="normal", text="Scan Now")
+        self._hide_progress()
         self._set_message(f"Scan failed: {msg}")
+        self._resurface()
 
-    def _add_section_header(self, text):
-        tk.Label(self._results_frame, text=text.upper(), font=("Segoe UI", 8, "bold"),
-                 fg=TEXT_DIM, bg=BG, anchor="w").pack(fill="x", padx=14, pady=(10, 2))
+    # ── Progress bar ──────────────────────────────────────────────────
+
+    def _show_progress(self):
+        self._progress_frac = 0.0
+        self._progress_lbl.configure(text="Reading installed mods…")
+        self._draw_progress()
+        if not self._progress_frame.winfo_ismapped():
+            self._progress_frame.pack(fill="x", padx=14, pady=(0, 8), before=self._container)
+
+    def _hide_progress(self):
+        self._progress_frame.pack_forget()
+
+    def _draw_progress(self):
+        self._progress_canvas.delete("all")
+        w = self._progress_canvas.winfo_width()
+        h = self._progress_canvas.winfo_height()
+        if w > 1 and self._progress_frac > 0:
+            self._progress_canvas.create_rectangle(
+                0, 0, w * self._progress_frac, h, fill=ACCENT_UPD, width=0)
+
+    def set_progress(self, done, total):
+        # Matching runs on a background thread paced by a per-mod network
+        # lookup, so this is the part of a scan actually worth showing
+        # progress for -- the file-discovery phase before it is fast enough
+        # not to need it.
+        if total <= 0:
+            return
+        if not self._progress_frame.winfo_ismapped():
+            self._progress_frame.pack(fill="x", padx=14, pady=(0, 8), before=self._container)
+        self._progress_lbl.configure(text=f"Checking mod {done} of {total} against the Forge…")
+        self._progress_frac = min(1.0, done / total)
+        self._draw_progress()
+
+    def _resurface(self):
+        # The scan runs on a background thread and this is called back via
+        # root.after(0, ...) once it's done -- by then the main window has
+        # often regained focus/z-order (it's still ticking its own timer,
+        # handling tray events, etc.), which pushes this frameless popup
+        # behind it. Without this, a finished scan looks like the window
+        # silently closed, when it's actually just sitting behind the main
+        # one with the results already in it.
+        if self.winfo_exists():
+            self.lift()
+            self.focus_force()
+
+    def _add_section_header(self, text, color=TEXT_BRIGHT):
+        """A full-width colored band rather than plain inline text -- these
+        are the only landmarks while scrolling a long results list, so they
+        need to actually stand out instead of blending into the row text."""
+        row = tk.Frame(self._results_frame, bg=STATUS_BG)
+        row.pack(fill="x", pady=(12, 4))
+        tk.Label(row, text=f"●  {text.upper()}", font=("Segoe UI", 9, "bold"),
+                 fg=color, bg=STATUS_BG, anchor="w").pack(side="left", padx=14, pady=5)
+        return row
 
     def _open_all(self, links):
         # Staggered rather than fired in a tight loop -- opening a dozen tabs
@@ -758,6 +827,7 @@ class LocalScanSettingsWindow(FramelessPopup):
 
     def set_results(self, results):
         self._scan_btn.configure(state="normal", text="Scan Now")
+        self._hide_progress()
         self._clear_results()
 
         updates = [r for r in results if r["update_available"]]
@@ -774,17 +844,14 @@ class LocalScanSettingsWindow(FramelessPopup):
             fill="x", padx=14, pady=(10, 4), anchor="w")
 
         if updates:
-            header_row = tk.Frame(self._results_frame, bg=BG)
-            header_row.pack(fill="x", padx=14, pady=(10, 2))
-            tk.Label(header_row, text="UPDATES AVAILABLE", font=("Segoe UI", 8, "bold"),
-                     fg=TEXT_DIM, bg=BG, anchor="w").pack(side="left")
+            header_row = self._add_section_header("Updates Available", color=ACCENT_UPD)
             links = [r["forge"]["link"] for r in updates]
             tk.Button(
                 header_row, text="Open All", font=("Segoe UI", 7),
                 bg=CARD_BG, fg=TEXT, activebackground=CARD_HOVER,
                 activeforeground=TEXT_BRIGHT, relief="flat", padx=6, pady=1,
                 cursor="hand2", command=lambda links=links: self._open_all(links),
-            ).pack(side="right")
+            ).pack(side="right", padx=(0, 10))
 
             for r in updates:
                 local, forge = r["local"], r["forge"]
@@ -806,16 +873,18 @@ class LocalScanSettingsWindow(FramelessPopup):
                 card.pack(fill="x", padx=14, pady=2)
 
         if up_to_date:
-            self._add_section_header("Up to date")
+            self._add_section_header("Up to Date", color=ACCENT_NEW)
             for r in up_to_date:
                 name = r["local"].get("name") or r["forge"]["title"]
                 self._add_plain_row(f"{name}  —  v{r['current_version']}", link=r["forge"]["link"])
 
         if unmatched:
-            self._add_section_header("Not found on Forge")
+            self._add_section_header("Not Found on Forge", color=TEXT_DIM)
             for r in unmatched:
                 name = r["local"].get("name") or "(unknown)"
                 self._add_plain_row(f"{name}  —  v{r['local'].get('version') or '?'}")
+
+        self._resurface()
 
 
 def _relative_time(ts_str):
