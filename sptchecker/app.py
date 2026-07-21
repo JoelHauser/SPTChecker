@@ -16,6 +16,8 @@ from .config import (
     WINDOW_DEFAULT_GEOMETRY, WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH,
 )
 from .feed import check_mod_published, fetch_feeds
+from .localmods import scan_installed_mods
+from .matcher import match_local_mods
 from .platform import (
     badge_icon, is_startup_enabled, load_app_icon, refresh_startup_if_stale,
     send_toast, set_dark_title_bar, set_dpi_aware, set_startup_enabled,
@@ -23,7 +25,7 @@ from .platform import (
 from .state import (
     compute_stats, download_thumb, load_state, placeholder_thumb, purge_old_thumbs, save_state,
 )
-from .widgets import ModCard, StatsWindow
+from .widgets import LocalScanSettingsWindow, ModCard, StatsWindow
 
 _ICON_SUPERSAMPLE = 4
 
@@ -75,6 +77,8 @@ class SPTCheckerApp:
 
         self._photos = []
         self._checking = False
+        self._scanning = False
+        self._local_scan_window = None
         self._next_check_ts = None
         self._tray = None
         self._unread_count = 0
@@ -92,6 +96,8 @@ class SPTCheckerApp:
         self.root.protocol("WM_DELETE_WINDOW", self._hide_to_tray)
 
         self.root.after(400, self._check_now)
+        if self.state.get("local_scan_enabled") and self.state.get("spt_install_path"):
+            self.root.after(800, self._scan_local_now)
 
     # ── Window geometry ─────────────────────────────────────────────────
 
@@ -133,6 +139,14 @@ class SPTCheckerApp:
             cursor="hand2", command=self._show_stats,
         )
         stats_btn.pack(side="left", padx=(6, 0))
+
+        local_scan_btn = tk.Button(
+            hdr, text="Local Mods", font=("Segoe UI", 8),
+            bg=CARD_BG, fg=TEXT, activebackground=CARD_HOVER,
+            activeforeground=TEXT_BRIGHT, relief="flat", padx=8, pady=2,
+            cursor="hand2", command=self._show_local_scan,
+        )
+        local_scan_btn.pack(side="left", padx=(6, 0))
 
         self._btn = tk.Button(
             hdr, text="Check Now", font=("Segoe UI", 8),
@@ -284,6 +298,80 @@ class SPTCheckerApp:
     def _show_stats(self):
         stats = compute_stats(self.state.get("mods", {}))
         StatsWindow(self.root, stats)
+
+    # ── Local mod scan (opt-in) ───────────────────────────────────────
+
+    def _show_local_scan(self):
+        self._local_scan_window = LocalScanSettingsWindow(
+            self.root,
+            enabled=self.state.get("local_scan_enabled", False),
+            spt_path=self.state.get("spt_install_path", ""),
+            on_toggle=self._toggle_local_scan,
+            on_path_change=self._set_local_scan_path,
+            on_scan_now=self._scan_local_now,
+        )
+        cached = self.state.get("local_scan_results")
+        if cached:
+            self._local_scan_window.set_results(cached)
+
+    def _toggle_local_scan(self, enabled):
+        self.state["local_scan_enabled"] = enabled
+        save_state(self.state)
+
+    def _set_local_scan_path(self, path):
+        self.state["spt_install_path"] = path
+        save_state(self.state)
+
+    def _scan_local_now(self):
+        if self._scanning:
+            return
+        self._scanning = True
+        threading.Thread(target=self._bg_scan_local, daemon=True).start()
+
+    def _bg_scan_local(self):
+        try:
+            spt_path = self.state.get("spt_install_path", "")
+            local_mods = scan_installed_mods(spt_path)
+            results = match_local_mods(local_mods)
+            for r in results:
+                if r["update_available"]:
+                    pil = download_thumb(r["forge"].get("thumb_url"))
+                    r["_pil"] = pil if pil else placeholder_thumb()
+            self.root.after(0, self._apply_local_scan, results)
+        except Exception as exc:
+            self.root.after(0, self._on_local_scan_error, str(exc))
+
+    def _apply_local_scan(self, results):
+        self._scanning = False
+        # _pil (a PIL Image) isn't JSON-serializable -- strip it before persisting,
+        # the widget falls back to a placeholder for cached results reloaded later.
+        self.state["local_scan_results"] = [
+            {k: v for k, v in r.items() if k != "_pil"} for r in results
+        ]
+        save_state(self.state)
+
+        if self._local_scan_window and self._local_scan_window.winfo_exists():
+            self._local_scan_window.set_results(results)
+
+        updates = [r for r in results if r["update_available"]]
+        if updates:
+            lines = [
+                f"{r['forge']['title']} {r['current_version']} → {r['available_version']}"
+                for r in updates[:3]
+            ]
+            if len(updates) > 3:
+                lines.append(f"and {len(updates) - 3} more…")
+            url = updates[0]["forge"]["link"] if len(updates) == 1 else FORGE_URL
+            send_toast(
+                f"{len(updates)} Installed Mod{'s' if len(updates) != 1 else ''} Can Be Updated",
+                "\n".join(lines),
+                launch_url=url,
+            )
+
+    def _on_local_scan_error(self, msg):
+        self._scanning = False
+        if self._local_scan_window and self._local_scan_window.winfo_exists():
+            self._local_scan_window.set_error(msg)
 
     # ── System tray ────────────────────────────────────────────────────
 

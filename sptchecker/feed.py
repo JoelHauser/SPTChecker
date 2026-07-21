@@ -38,6 +38,32 @@ def _truncate(text, limit):
     return cut.rstrip() + "…"
 
 
+def _parse_api_mod(item):
+    """Map a raw /api/v0/mods item (as returned with include=versions,category) to
+    this app's internal mod dict shape."""
+    versions = item.get("versions", [])
+    latest = versions[0] if versions else {}
+    owner = item.get("owner") or {}
+    category = item.get("category") or {}
+
+    return {
+        "title": item.get("name", ""),
+        "link": item.get("detail_url", ""),
+        "guid": item.get("guid", ""),
+        "author": owner.get("name", "Unknown"),
+        "author_id": owner.get("id", ""),
+        "author_since": owner.get("created_at", ""),
+        "version": latest.get("version", ""),
+        "category": category.get("title", ""),
+        "published": item.get("published_at", ""),
+        "updated": latest.get("created_at", item.get("updated_at", "")),
+        "thumb_url": item.get("thumbnail", ""),
+        "description": (item.get("teaser", "") or "")[:300],
+        "full_description": item.get("teaser", "") or "",
+        "changelog": _truncate(latest.get("description", "") or "", CHANGELOG_MAX_CHARS),
+    }
+
+
 def _fetch_api_mods(sort="-updated_at"):
     """Fetch mods from the API with the given sort order."""
     try:
@@ -47,30 +73,49 @@ def _fetch_api_mods(sort="-updated_at"):
             "per_page": 50,
         }, timeout=30)
         resp.raise_for_status()
+        return [_parse_api_mod(item) for item in resp.json().get("data", [])]
+    except Exception:
+        return []
 
-        mods = []
-        for item in resp.json().get("data", []):
-            versions = item.get("versions", [])
-            latest = versions[0] if versions else {}
-            owner = item.get("owner") or {}
-            category = item.get("category") or {}
 
-            mods.append({
-                "title": item.get("name", ""),
-                "link": item.get("detail_url", ""),
-                "author": owner.get("name", "Unknown"),
-                "author_id": owner.get("id", ""),
-                "author_since": owner.get("created_at", ""),
-                "version": latest.get("version", ""),
-                "category": category.get("title", ""),
-                "published": item.get("published_at", ""),
-                "updated": latest.get("created_at", item.get("updated_at", "")),
-                "thumb_url": item.get("thumbnail", ""),
-                "description": (item.get("teaser", "") or "")[:300],
-                "full_description": item.get("teaser", "") or "",
-                "changelog": _truncate(latest.get("description", "") or "", CHANGELOG_MAX_CHARS),
-            })
-        return mods
+def lookup_by_guid(guid):
+    """Exact-match a locally-scanned mod's GUID against the Forge catalog.
+
+    Forge exposes `guid` as a filterable field (confirmed live against
+    filter[guid]=<value>), so this is a single indexed lookup rather than a
+    search -- the primary local-mod matching strategy. Returns None on no
+    match, ambiguous results, or any request failure.
+    """
+    if not guid:
+        return None
+    try:
+        resp = _session.get(API_URL, headers=_API_HEADERS, params={
+            "include": "versions,category",
+            "filter[guid]": guid,
+        }, timeout=15)
+        resp.raise_for_status()
+        data = resp.json().get("data", [])
+        return _parse_api_mod(data[0]) if data else None
+    except Exception:
+        return None
+
+
+def lookup_by_name(name):
+    """Fallback search by name for local mods that yielded no clean GUID match.
+
+    filter[name] does a partial/contains-style match server-side, so callers
+    should rank the results themselves rather than assume the first is right.
+    """
+    if not name:
+        return []
+    try:
+        resp = _session.get(API_URL, headers=_API_HEADERS, params={
+            "include": "versions,category",
+            "filter[name]": name,
+            "per_page": 20,
+        }, timeout=15)
+        resp.raise_for_status()
+        return [_parse_api_mod(item) for item in resp.json().get("data", [])]
     except Exception:
         return []
 

@@ -41,6 +41,16 @@ NEW_AUTHOR_DAYS = 60
 TOP_STATS_WINDOW_DAYS = 30
 TREND_WINDOW_DAYS = 30
 
+# ── Local mod scan (opt-in) ──────────────────────────────────────────────
+
+BEPINEX_PLUGINS_SUBPATH = "BepInEx/plugins"
+SERVER_MODS_SUBPATH = "SPT/user/mods"
+LEGACY_SERVER_MODS_SUBPATH = "user/mods"
+LOCAL_MOD_FIELDS = (
+    "source", "path", "guid", "name", "author", "version", "spt_version",
+)
+FUZZY_MATCH_THRESHOLD = 0.82
+
 # ── Window ─────────────────────────────────────────────────────────────
 
 WINDOW_DEFAULT_GEOMETRY = "780x600"

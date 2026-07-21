@@ -4,15 +4,18 @@ import tkinter as tk
 import tkinter.font as tkfont
 import webbrowser
 from datetime import datetime, timezone
+from tkinter import filedialog
 
 from PIL import Image, ImageDraw, ImageTk
 
 from .config import (
     ACCENT_NEW, ACCENT_NEW_AUTHOR, ACCENT_UPD, BG, CARD_BG, CARD_HOVER,
-    FORGE_USER_URL, NEW_AUTHOR_DAYS, SEPARATOR, STATUS_BG, TEXT_BRIGHT, TEXT_DIM,
-    TREND_WINDOW_DAYS,
+    CATEGORY_COLOR_DEFAULT, CATEGORY_COLORS,
+    FORGE_USER_URL, NEW_AUTHOR_DAYS, SEPARATOR, STATUS_BG, TEXT, TEXT_BRIGHT, TEXT_DIM,
+    THUMB_SIZE, TREND_WINDOW_DAYS,
 )
 from .feed import fetch_author_id
+from .localmods import validate_spt_root
 from .utils import parse_dt
 
 class ContextMenu(tk.Toplevel):
@@ -364,6 +367,23 @@ def _catmull_rom(points, segments=8):
     return out
 
 
+def _update_canvas_scrollbar(canvas, scrollbar):
+    """Sync a canvas's scrollregion to its content and show/hide the paired
+    scrollbar based on whether the content actually overflows -- an empty,
+    non-functional strip when everything already fits looks like a broken
+    control, not a nice one."""
+    canvas.update_idletasks()
+    bbox = canvas.bbox("all")
+    canvas.configure(scrollregion=bbox)
+    content_h = (bbox[3] - bbox[1]) if bbox else 0
+    if content_h > canvas.winfo_height():
+        if not scrollbar.winfo_ismapped():
+            scrollbar.pack(side="right", fill="y")
+            scrollbar.update_idletasks()
+    elif scrollbar.winfo_ismapped():
+        scrollbar.pack_forget()
+
+
 class StatsWindow(FramelessPopup):
     """Popup showing a summary of the full mod-tracking history."""
 
@@ -380,16 +400,15 @@ class StatsWindow(FramelessPopup):
         canvas.configure(yscrollcommand=scrollbar.set)
         scrollbar.set_command(canvas.yview)
         canvas.pack(side="left", fill="both", expand=True)
-        # Scrollbar is only packed once content actually overflows (see
-        # _update_scrollbar) -- an empty, non-functional strip when everything
-        # already fits looks like a broken control, not a nice one.
+        # Scrollbar is only packed once content actually overflows -- see
+        # _update_canvas_scrollbar.
 
         inner = tk.Frame(canvas, bg=BG)
         inner_id = canvas.create_window(0, 0, window=inner, anchor="nw")
-        inner.bind("<Configure>", lambda _e: self._update_scrollbar(canvas, scrollbar))
+        inner.bind("<Configure>", lambda _e: _update_canvas_scrollbar(canvas, scrollbar))
         canvas.bind("<Configure>", lambda e: (
             canvas.itemconfigure(inner_id, width=e.width),
-            self._update_scrollbar(canvas, scrollbar),
+            _update_canvas_scrollbar(canvas, scrollbar),
         ))
 
         def on_wheel(e):
@@ -410,19 +429,6 @@ class StatsWindow(FramelessPopup):
         self._build_section(inner, "Top Categories (Last 30 Days)", stats["top_categories"], "mod")
 
         self._finish_show()
-
-    @staticmethod
-    def _update_scrollbar(canvas, scrollbar):
-        canvas.update_idletasks()
-        bbox = canvas.bbox("all")
-        canvas.configure(scrollregion=bbox)
-        content_h = (bbox[3] - bbox[1]) if bbox else 0
-        if content_h > canvas.winfo_height():
-            if not scrollbar.winfo_ismapped():
-                scrollbar.pack(side="right", fill="y")
-                scrollbar.update_idletasks()
-        elif scrollbar.winfo_ismapped():
-            scrollbar.pack_forget()
 
     def _build_trend(self, parent, daily_counts, daily_dates):
         if not daily_counts:
@@ -563,6 +569,216 @@ class StatsWindow(FramelessPopup):
             webbrowser.open(fallback_link)
 
 
+_local_scan_placeholder_photo = None
+
+
+def _local_scan_placeholder():
+    """Shared placeholder thumbnail for local-scan result cards -- these mods
+    aren't fetched from the Forge feed, so there's no thumbnail URL to use."""
+    global _local_scan_placeholder_photo
+    if _local_scan_placeholder_photo is None:
+        _local_scan_placeholder_photo = ImageTk.PhotoImage(Image.new("RGB", THUMB_SIZE, SEPARATOR))
+    return _local_scan_placeholder_photo
+
+
+class LocalScanSettingsWindow(FramelessPopup):
+    """Popup for the opt-in local-install scan: enable/disable, pick the SPT
+    folder, trigger a scan, and show matched/unmatched results.
+
+    Kept dumb by design, matching how the rest of this app's popups work --
+    it owns no scan/network logic itself, only widgets + callbacks. The app
+    (which already owns state + threading for the Forge poll) drives the
+    actual scan and calls back into whichever of set_scanning/set_results/
+    set_error applies once it's done.
+    """
+
+    WIDTH, HEIGHT = 440, 560
+
+    def __init__(self, parent, enabled, spt_path, on_toggle, on_path_change, on_scan_now):
+        super().__init__(parent, "Local Mod Scan")
+        self._on_toggle = on_toggle
+        self._on_path_change = on_path_change
+        self._on_scan_now = on_scan_now
+        self._spt_path = spt_path
+        self._photos = []
+
+        self._enabled_var = tk.BooleanVar(value=enabled)
+        tk.Checkbutton(
+            self, text="Enable local mod scanning", font=("Segoe UI", 9),
+            fg=TEXT_DIM, bg=BG, selectcolor=CARD_BG,
+            activebackground=BG, activeforeground=TEXT,
+            variable=self._enabled_var, command=self._toggle,
+        ).pack(fill="x", padx=14, pady=(14, 4), anchor="w")
+
+        path_row = tk.Frame(self, bg=BG)
+        path_row.pack(fill="x", padx=14, pady=(0, 2))
+        self._path_lbl = tk.Label(path_row, text=self._display_path(), font=("Segoe UI", 8),
+                                  fg=TEXT_DIM, bg=BG, anchor="w")
+        self._path_lbl.pack(side="left", fill="x", expand=True)
+        tk.Button(
+            path_row, text="Browse…", font=("Segoe UI", 8),
+            bg=CARD_BG, fg=TEXT, activebackground=CARD_HOVER,
+            activeforeground=TEXT_BRIGHT, relief="flat", padx=8, pady=2,
+            cursor="hand2", command=self._browse,
+        ).pack(side="right")
+
+        self._validation_lbl = tk.Label(self, text="", font=("Segoe UI", 8), bg=BG, anchor="w")
+        self._validation_lbl.pack(fill="x", padx=14, pady=(2, 10))
+
+        self._scan_btn = tk.Button(
+            self, text="Scan Now", font=("Segoe UI", 9),
+            bg=CARD_BG, fg=TEXT_BRIGHT, activebackground=CARD_HOVER,
+            activeforeground=TEXT_BRIGHT, relief="flat", padx=10, pady=4,
+            cursor="hand2", command=self._scan_now,
+        )
+        self._scan_btn.pack(padx=14, pady=(0, 10), anchor="w")
+
+        # Scrollable results area, same canvas+scrollbar shape as StatsWindow.
+        container = tk.Frame(self, bg=BG)
+        container.pack(fill="both", expand=True, padx=0, pady=(0, 14))
+
+        canvas = tk.Canvas(container, bg=BG, highlightthickness=0)
+        scrollbar = MiniScrollbar(container)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.set_command(canvas.yview)
+        canvas.pack(side="left", fill="both", expand=True, padx=(14, 0))
+
+        self._results_frame = tk.Frame(canvas, bg=BG)
+        inner_id = canvas.create_window(0, 0, window=self._results_frame, anchor="nw")
+        self._results_frame.bind("<Configure>", lambda _e: _update_canvas_scrollbar(canvas, scrollbar))
+        canvas.bind("<Configure>", lambda e: (
+            canvas.itemconfigure(inner_id, width=e.width),
+            _update_canvas_scrollbar(canvas, scrollbar),
+        ))
+
+        def on_wheel(e):
+            canvas.yview_scroll(int(-e.delta / 40), "units")
+        canvas.bind("<Enter>", lambda _e: canvas.bind_all("<MouseWheel>", on_wheel))
+        canvas.bind("<Leave>", lambda _e: canvas.unbind_all("<MouseWheel>"))
+
+        self._update_validation()
+        self._set_message("Click Scan Now to check your installed mods against the Forge.")
+        self._finish_show()
+
+    def _display_path(self):
+        return self._spt_path or "No folder selected"
+
+    def _toggle(self):
+        enabled = self._enabled_var.get()
+        self._on_toggle(enabled)
+        self._update_validation()
+
+    def _browse(self):
+        chosen = filedialog.askdirectory(
+            parent=self, initialdir=self._spt_path or None, title="Select your SPT install folder",
+        )
+        if not chosen:
+            return
+        self._spt_path = chosen
+        self._path_lbl.configure(text=self._display_path())
+        self._on_path_change(chosen)
+        self._update_validation()
+
+    def _update_validation(self):
+        if not self._spt_path:
+            self._validation_lbl.configure(text="", fg=TEXT_DIM)
+            valid = False
+        elif validate_spt_root(self._spt_path):
+            self._validation_lbl.configure(text="✓ Looks like a valid SPT install", fg=ACCENT_NEW)
+            valid = True
+        else:
+            self._validation_lbl.configure(
+                text="⚠ Couldn't find BepInEx/plugins or SPT/user/mods here", fg=ACCENT_UPD)
+            valid = False
+        self._scan_btn.configure(state="normal" if (valid and self._enabled_var.get()) else "disabled")
+
+    def _scan_now(self):
+        self._scan_btn.configure(state="disabled", text="Scanning…")
+        self._set_message("Scanning installed mods and checking the Forge…")
+        self._on_scan_now()
+
+    def _clear_results(self):
+        for w in self._results_frame.winfo_children():
+            w.destroy()
+        self._photos.clear()
+
+    def _set_message(self, text):
+        self._clear_results()
+        tk.Label(self._results_frame, text=text, font=("Segoe UI", 9), fg=TEXT_DIM,
+                 bg=BG, wraplength=self.WIDTH - 44, justify="left").pack(
+            fill="x", padx=14, pady=10, anchor="w")
+
+    def set_scanning(self):
+        self._set_message("Scanning installed mods and checking the Forge…")
+
+    def set_error(self, msg):
+        self._scan_btn.configure(state="normal", text="Scan Now")
+        self._set_message(f"Scan failed: {msg}")
+
+    def _add_section_header(self, text):
+        tk.Label(self._results_frame, text=text.upper(), font=("Segoe UI", 8, "bold"),
+                 fg=TEXT_DIM, bg=BG, anchor="w").pack(fill="x", padx=14, pady=(10, 2))
+
+    def _add_plain_row(self, text, link=None):
+        row = tk.Label(self._results_frame, text=text, font=("Segoe UI", 9),
+                       fg=TEXT_DIM, bg=BG, anchor="w", cursor="hand2" if link else "arrow")
+        row.pack(fill="x", padx=14, pady=1, anchor="w")
+        if link:
+            row.bind("<Button-1>", lambda _e: webbrowser.open(link))
+            row.bind("<Enter>", lambda _e: row.configure(fg=TEXT_BRIGHT))
+            row.bind("<Leave>", lambda _e: row.configure(fg=TEXT_DIM))
+
+    def set_results(self, results):
+        self._scan_btn.configure(state="normal", text="Scan Now")
+        self._clear_results()
+
+        updates = [r for r in results if r["update_available"]]
+        up_to_date = [r for r in results if r["forge"] and not r["update_available"]]
+        unmatched = [r for r in results if not r["forge"]]
+
+        summary = (
+            f"{len(results)} mods scanned  —  {len(updates)} update"
+            f"{'s' if len(updates) != 1 else ''} available, {len(up_to_date)} up to date, "
+            f"{len(unmatched)} not found on Forge"
+        )
+        tk.Label(self._results_frame, text=summary, font=("Segoe UI", 9), fg=TEXT_BRIGHT,
+                 bg=BG, wraplength=self.WIDTH - 44, justify="left").pack(
+            fill="x", padx=14, pady=(10, 4), anchor="w")
+
+        if updates:
+            self._add_section_header("Updates available")
+            for r in updates:
+                local, forge = r["local"], r["forge"]
+                mod = {
+                    "title": forge["title"],
+                    "link": forge["link"],
+                    "author": forge["author"],
+                    "category": forge.get("category", ""),
+                    "version": r["available_version"],
+                    "prev_version": r["current_version"],
+                    "description": forge.get("description", ""),
+                    "local_update_available": True,
+                }
+                accent = CATEGORY_COLORS.get(mod["category"], CATEGORY_COLOR_DEFAULT)
+                pil = r.get("_pil")
+                photo = ImageTk.PhotoImage(pil) if pil else _local_scan_placeholder()
+                self._photos.append(photo)
+                card = ModCard(self._results_frame, mod, accent, photo)
+                card.pack(fill="x", padx=14, pady=2)
+
+        if up_to_date:
+            self._add_section_header("Up to date")
+            for r in up_to_date:
+                name = r["local"].get("name") or r["forge"]["title"]
+                self._add_plain_row(f"{name}  —  v{r['current_version']}", link=r["forge"]["link"])
+
+        if unmatched:
+            self._add_section_header("Not found on Forge")
+            for r in unmatched:
+                name = r["local"].get("name") or "(unknown)"
+                self._add_plain_row(f"{name}  —  v{r['local'].get('version') or '?'}")
+
+
 def _relative_time(ts_str):
     """Convert an ISO or RFC 2822 timestamp to a relative string."""
     dt = parse_dt(ts_str)
@@ -646,6 +862,12 @@ class ModCard(tk.Frame):
                                  fg=CARD_BG, bg=ACCENT_NEW, cursor="hand2")
             new_badge.pack(side="left", padx=(0, 5))
             self._widgets.append(new_badge)
+
+        if mod.get("local_update_available"):
+            upd_badge = tk.Label(meta_frame, text=" UPDATE AVAILABLE ", font=("Segoe UI", 7, "bold"),
+                                 fg=CARD_BG, bg=ACCENT_UPD, cursor="hand2")
+            upd_badge.pack(side="left", padx=(0, 5))
+            self._widgets.append(upd_badge)
 
         if _is_new_author(mod.get("author_since", "")):
             author_badge = tk.Label(meta_frame, text=" NEW AUTHOR ", font=("Segoe UI", 7, "bold"),
