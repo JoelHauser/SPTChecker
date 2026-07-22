@@ -9,7 +9,6 @@ _MAX_SCAN_BYTES = 100 * 1024 * 1024
 
 _GUID_RE = re.compile(r"^(?=.*[a-z])[a-z0-9_-]+(\.[a-z0-9_-]+){1,4}$", re.IGNORECASE)
 _VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(\.\d+)?$")
-_SPT_VERSION_RE = re.compile(r"^[~^]\d+(\.\d+){1,2}(\.\d+)?$")
 # Dotted strings ending in a common file extension are filenames referenced in
 # code (e.g. "config.json"), not a mod's GUID -- same shape as a real 2-segment
 # GUID otherwise, so this can't be caught by the GUID regex alone.
@@ -44,7 +43,7 @@ def _extract_client_plugin(dll_path):
     try:
         matches = [
             meta.decode_fixed_string_args(blob, 3)
-            for name, _ns, blob in meta.custom_attributes()
+            for name, blob in meta.custom_attributes()
             if name == "BepInPlugin"
         ]
     except Exception:
@@ -53,7 +52,7 @@ def _extract_client_plugin(dll_path):
     if len(matches) != 1:
         return None
     guid, name, version = matches[0]
-    return {"guid": guid, "name": name, "version": version, "spt_version": None}
+    return {"guid": guid, "name": name, "version": version}
 
 
 def _extract_server_mod(dll_path):
@@ -82,8 +81,7 @@ def _extract_server_mod(dll_path):
         guid = next((s for s in strings if _looks_like_guid(s)), None)
         version = next((s for s in strings if _VERSION_RE.match(s)), None)
         if guid and version:
-            spt_version = next((s for s in strings if _SPT_VERSION_RE.match(s)), None)
-            matches.append({"guid": guid, "name": None, "version": version, "spt_version": spt_version})
+            matches.append({"guid": guid, "version": version})
     if len(matches) != 1:
         return None
     return matches[0]
@@ -141,7 +139,6 @@ def _parse_legacy_manifest(manifest_path):
         "name": name,
         "author": data.get("author"),
         "version": version,
-        "spt_version": data.get("sptVersion"),
     }
 
 
@@ -154,9 +151,9 @@ def validate_spt_root(path):
 
 def scan_installed_mods(spt_root):
     """Scan an SPT install for locally installed mods. Each record has
-    source/path/guid/name/version/spt_version (and author, for legacy
-    manifests only); entries where extraction failed are skipped rather
-    than included with missing data."""
+    source/path/guid/name/version (and author, for legacy manifests only);
+    entries where extraction failed are skipped rather than included with
+    missing data."""
     results = []
 
     for dll_path in find_bepinex_plugins(spt_root):
@@ -167,7 +164,10 @@ def scan_installed_mods(spt_root):
     for dll_path in find_server_mods(spt_root):
         meta = extract_mod_metadata(dll_path, mode="record")
         if meta:
-            meta["name"] = meta["name"] or dll_path.parent.name
+            # The server extractor can't reliably pull a display name out of
+            # the IL (see _extract_server_mod); the mod's folder name is
+            # always accurate.
+            meta["name"] = dll_path.parent.name
             results.append({"source": "server", "path": str(dll_path), **meta})
 
     for manifest_path in find_legacy_server_mods(spt_root):

@@ -17,6 +17,7 @@ metadata library.
 
 import bisect
 import struct
+from pathlib import Path
 
 _PE_SIG_OFFSET = 0x3C
 _DATA_DIR_CLI_HEADER = 14
@@ -95,7 +96,6 @@ def _parse_pe_sections(data):
     if _DATA_DIR_CLI_HEADER >= num_rva_sizes:
         raise MetadataError("no CLI header data directory (not a managed assembly)")
     cli_rva = _u4(data, data_dirs_off + _DATA_DIR_CLI_HEADER * 8)
-    cli_size = _u4(data, data_dirs_off + _DATA_DIR_CLI_HEADER * 8 + 4)
     if cli_rva == 0:
         raise MetadataError("empty CLI header RVA (not a managed assembly)")
 
@@ -109,7 +109,7 @@ def _parse_pe_sections(data):
         raw_ptr = _u4(data, rec + 20)
         entries.append((virtual_address, virtual_size, raw_size, raw_ptr))
 
-    return _Sections(entries), cli_rva, cli_size
+    return _Sections(entries), cli_rva
 
 
 # ── Coded indices: (tag_bit_width, [table indices in tag order]) ──────────
@@ -202,7 +202,7 @@ class AssemblyMetadata:
 
     def __init__(self, data):
         self._data = data
-        sections, cli_rva, _ = _parse_pe_sections(data)
+        sections, cli_rva = _parse_pe_sections(data)
         self._sections = sections
         cli_off = sections.rva_to_offset(cli_rva)
         meta_rva = _u4(data, cli_off + 8)
@@ -210,6 +210,10 @@ class AssemblyMetadata:
         self._parse_metadata_root()
         self._parse_tables_stream()
         self._method_owner_starts = None
+        # A few hundred distinct tokens/constructors typically repeat across
+        # thousands of call sites and attribute rows -- memoize resolutions.
+        self._method_name_cache = {}
+        self._ca_type_cache = {}
 
     # ── Root / streams ──────────────────────────────────────────────
     def _parse_metadata_root(self):
@@ -274,11 +278,17 @@ class AssemblyMetadata:
 
         self._table_offsets = {}
         self._table_row_sizes = {}
+        # Field widths depend only on heap flags + row counts, both known by
+        # now -- resolve them once per table here instead of recomputing per
+        # field on every read_row (coded-index sizing scans up to 22 row
+        # counts, a real cost across thousands of row reads).
+        self._field_sizes = {}
         for idx in sorted(row_counts):
-            row_size = self._row_size(TABLE_LAYOUTS[idx])
+            sizes = [self._field_size(f) for f in TABLE_LAYOUTS[idx]]
+            self._field_sizes[idx] = sizes
             self._table_offsets[idx] = pos
-            self._table_row_sizes[idx] = row_size
-            pos += row_size * row_counts[idx]
+            self._table_row_sizes[idx] = sum(sizes)
+            pos += sum(sizes) * row_counts[idx]
 
     def _coded_index_size(self, name):
         tag_bits, tables = CODED_INDEXES[name]
@@ -287,8 +297,6 @@ class AssemblyMetadata:
 
     def _field_size(self, field):
         kind = field[0]
-        if kind == "u1":
-            return 1
         if kind == "u2":
             return 2
         if kind == "u4":
@@ -305,50 +313,33 @@ class AssemblyMetadata:
             return self._coded_index_size(field[1])
         raise MetadataError(f"unknown field kind {kind}")
 
-    def _row_size(self, layout):
-        return sum(self._field_size(f) for f in layout)
-
     def row_count(self, table_idx):
         return self._row_counts.get(table_idx, 0)
 
-    def _read_field(self, data, off, field):
-        kind = field[0]
-        if kind == "u1":
-            return _u1(data, off), off + 1
-        if kind == "u2":
-            return _u2(data, off), off + 2
-        if kind == "u4":
-            return _u4(data, off), off + 4
-        if kind in ("str", "guid", "blob"):
-            size = self._field_size(field)
-            val = _u2(data, off) if size == 2 else _u4(data, off)
-            return val, off + size
-        if kind == "tbl":
-            size = self._field_size(field)
-            val = _u2(data, off) if size == 2 else _u4(data, off)
-            return val, off + size
-        if kind == "coded":
-            size = self._field_size(field)
-            raw = _u2(data, off) if size == 2 else _u4(data, off)
+    @staticmethod
+    def _read_field(data, off, field, size):
+        # Every field is a plain little-endian uint of precomputed width;
+        # coded indices additionally unpack into (table, row_idx).
+        val = _u2(data, off) if size == 2 else _u4(data, off)
+        if field[0] == "coded":
             tag_bits, tables = CODED_INDEXES[field[1]]
-            tag_mask = (1 << tag_bits) - 1
-            tag = raw & tag_mask
-            row_idx = raw >> tag_bits
+            tag = val & ((1 << tag_bits) - 1)
+            row_idx = val >> tag_bits
             table = tables[tag] if tag < len(tables) else None
-            return (table, row_idx), off + size
-        raise MetadataError(f"unknown field kind {kind}")
+            val = (table, row_idx)
+        return val, off + size
 
     def read_row(self, table_idx, row_number):
         """1-based row_number, per ECMA-335 convention (0 means null)."""
         if row_number == 0 or table_idx not in self._table_offsets:
             return None
         layout = TABLE_LAYOUTS[table_idx]
-        row_size = self._table_row_sizes[table_idx]
-        off = self._table_offsets[table_idx] + (row_number - 1) * row_size
+        sizes = self._field_sizes[table_idx]
+        off = self._table_offsets[table_idx] + (row_number - 1) * self._table_row_sizes[table_idx]
         data = self._data
         values = []
-        for field in layout:
-            val, off = self._read_field(data, off, field)
+        for field, size in zip(layout, sizes):
+            val, off = self._read_field(data, off, field, size)
             values.append(val)
         return values
 
@@ -359,17 +350,11 @@ class AssemblyMetadata:
     # ── Semantic helpers ─────────────────────────────────────────────
     def type_name_of_typeref(self, row_idx):
         row = self.read_row(TYPEREF, row_idx)
-        if not row:
-            return None, None
-        _scope, name_idx, ns_idx = row
-        return self._string_at(name_idx), self._string_at(ns_idx)
+        return self._string_at(row[1]) if row else None
 
     def type_name_of_typedef(self, row_idx):
         row = self.read_row(TYPEDEF, row_idx)
-        if not row:
-            return None, None
-        _flags, name_idx, ns_idx, _extends, _fl, _ml = row
-        return self._string_at(name_idx), self._string_at(ns_idx)
+        return self._string_at(row[1]) if row else None
 
     def _owning_typedef(self, method_row_idx):
         """MethodDef rows don't store their declaring type; ownership is
@@ -391,42 +376,45 @@ class AssemblyMetadata:
 
     def custom_attribute_type_name(self, ca_row):
         """Resolve a CustomAttribute row's Type coded index to the declaring
-        type's (name, namespace), regardless of whether the constructor is a
-        MethodDef (declared in this assembly) or a MemberRef (declared in a
-        referenced assembly, e.g. BepInEx.dll)."""
-        _parent, (table, row_idx), _value = ca_row
+        type's name, regardless of whether the constructor is a MethodDef
+        (declared in this assembly) or a MemberRef (declared in a referenced
+        assembly, e.g. BepInEx.dll). Memoized per constructor -- many rows
+        share the same few attribute constructors."""
+        _parent, ctor, _value = ca_row
+        if ctor in self._ca_type_cache:
+            return self._ca_type_cache[ctor]
+        table, row_idx = ctor
+        name = None
         if table == METHODDEF:
             type_idx = self._owning_typedef(row_idx)
-            return self.type_name_of_typedef(type_idx) if type_idx else (None, None)
-        if table == MEMBERREF:
+            name = self.type_name_of_typedef(type_idx) if type_idx else None
+        elif table == MEMBERREF:
             mr = self.read_row(MEMBERREF, row_idx)
-            if not mr:
-                return None, None
-            (parent_table, parent_idx), _name, _sig = mr
-            if parent_table == TYPEREF:
-                return self.type_name_of_typeref(parent_idx)
-            if parent_table == TYPEDEF:
-                return self.type_name_of_typedef(parent_idx)
-            return None, None
-        return None, None
+            if mr:
+                (parent_table, parent_idx), _name, _sig = mr
+                if parent_table == TYPEREF:
+                    name = self.type_name_of_typeref(parent_idx)
+                elif parent_table == TYPEDEF:
+                    name = self.type_name_of_typedef(parent_idx)
+        self._ca_type_cache[ctor] = name
+        return name
 
     def custom_attributes(self):
-        """Yields (type_name, type_namespace, raw_value_blob) for every
-        CustomAttribute row in the assembly."""
+        """Yields (type_name, raw_value_blob) for every CustomAttribute row
+        in the assembly."""
         for _i, row in self.iter_rows(CUSTOMATTRIBUTE):
             if row is None:
                 continue
-            name, ns = self.custom_attribute_type_name(row)
+            name = self.custom_attribute_type_name(row)
             if name is None:
                 continue
-            value_blob = self._blob_at(row[2])
-            yield name, ns, value_blob
+            yield name, self._blob_at(row[2])
 
     def decode_fixed_string_args(self, blob, count):
         """Decode the first `count` fixed string arguments from a custom
         attribute's argument blob (prolog 0x0001 + SerString-encoded args).
         Assumes a constructor of `count` leading string parameters, true for
-        both BepInPlugin(guid,name,version) and BepInDependency(guid,ver)."""
+        BepInPlugin(guid, name, version)."""
         if len(blob) < 2 or blob[0:2] != b"\x01\x00":
             return None
         off = 2
@@ -446,8 +434,14 @@ class AssemblyMetadata:
 
     # ── Method bodies (IL) ───────────────────────────────────────────
     def method_rva(self, method_row_idx):
-        row = self.read_row(METHODDEF, method_row_idx)
-        return row[0] if row else 0
+        """MethodDef field 0 (RVA) is a fixed u4 at the row start -- read it
+        directly rather than decoding the whole 6-field row, since this runs
+        once per method body scanned."""
+        if method_row_idx == 0 or METHODDEF not in self._table_offsets:
+            return 0
+        off = self._table_offsets[METHODDEF] \
+            + (method_row_idx - 1) * self._table_row_sizes[METHODDEF]
+        return _u4(self._data, off)
 
     def method_il_bytes(self, method_row_idx):
         rva = self.method_rva(method_row_idx)
@@ -482,23 +476,28 @@ class AssemblyMetadata:
         """Resolve a call/callvirt operand token (top byte = table, low 3
         bytes = row index) to the called method's name, whether it's a
         MethodDef (defined in this assembly) or a MemberRef (defined in a
-        referenced assembly)."""
+        referenced assembly). Memoized -- the same few tokens repeat across
+        thousands of call sites."""
+        if token in self._method_name_cache:
+            return self._method_name_cache[token]
         table = (token >> 24) & 0xFF
         row_idx = token & 0x00FFFFFF
+        name = None
         if table == METHODDEF:
             row = self.read_row(METHODDEF, row_idx)
-            return self._string_at(row[3]) if row else None
-        if table == MEMBERREF:
+            name = self._string_at(row[3]) if row else None
+        elif table == MEMBERREF:
             row = self.read_row(MEMBERREF, row_idx)
-            return self._string_at(row[1]) if row else None
-        return None
+            name = self._string_at(row[1]) if row else None
+        self._method_name_cache[token] = name
+        return name
 
 
 # ── CIL opcode operand sizes ─────────────────────────────────────────────
 # Just enough to correctly step over every instruction (most single-byte
-# opcodes take no operand); we only need to *recognize* ldstr/dup/call/
-# callvirt, everything else just has to be skipped by the right amount so
-# the byte offset stays aligned.
+# opcodes take no operand); we only need to *recognize* ldstr/call/callvirt,
+# everything else just has to be skipped by the right amount so the byte
+# offset stays aligned.
 _OP_SIZE_1 = {0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x1F, 0x2B, 0x2C, 0x2D, 0x2E,
               0x2F, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0xDE}
 _OP_SIZE_2 = {0xFE09, 0xFE0A, 0xFE0B, 0xFE0C, 0xFE0D, 0xFE0E}
@@ -511,7 +510,7 @@ _OP_SIZE_8 = {0x21, 0x23}
 _OP_SIZE_FE_1 = {0xFE12, 0xFE19}
 _SWITCH = 0x45
 
-LDSTR, DUP, CALL, CALLVIRT = 0x72, 0x25, 0x28, 0x6F
+LDSTR, CALL, CALLVIRT = 0x72, 0x28, 0x6F
 
 
 def _il_instructions(il):
@@ -580,5 +579,4 @@ def iter_ctor_arg_strings(meta):
 
 
 def load(dll_path):
-    data = dll_path.read_bytes() if hasattr(dll_path, "read_bytes") else open(dll_path, "rb").read()
-    return AssemblyMetadata(data)
+    return AssemblyMetadata(Path(dll_path).read_bytes())

@@ -1,16 +1,8 @@
 import difflib
 import re
-import time
 
 from .config import FUZZY_MATCH_THRESHOLD
 from .feed import lookup_by_guid, lookup_by_name, lookup_by_query
-
-# Forge's API allows 300 requests per window; a full scan can easily fire a
-# couple hundred lookups (guid + name-fallback per unmatched mod) back to
-# back with no natural pacing, which blows straight through that limit and
-# makes real matches silently look like "not found" (feed.py's 429 backoff
-# is a safety net, not something to rely on for routine pacing).
-_REQUEST_PACING_SECONDS = 0.25
 
 
 def _normalize_name(name):
@@ -113,36 +105,24 @@ def _search_by_name(name, guid=None):
     against next, not necessarily the raw original name (e.g. a search for
     'Tyfon.UIFixes' only finds anything once split down to 'UI Fixes', so
     that's the form worth ranking candidates against too)."""
-    seen_links = set()
-    for i, term in enumerate(_search_terms(name, guid)):
-        if i > 0:
-            time.sleep(_REQUEST_PACING_SECONDS)
-        candidates = []
-        for c in lookup_by_name(term):
-            if c.get("link") not in seen_links:
-                seen_links.add(c.get("link"))
-                candidates.append(c)
+    for term in _search_terms(name, guid):
+        candidates = lookup_by_name(term)
         if candidates:
             return candidates, term
     return [], None
-
-
-def _best_score(target_name, candidate):
-    """Forge's display title and its URL slug are both fair game to compare
-    against -- the slug is already normalized (lowercase, hyphenated, no
-    punctuation), so it often lines up with a camelCase/dotted local name
-    far better than the display title does. Same approach Refringe's Check
-    Mods takes (max of a name-score and a slug-score)."""
-    name_ratio = difflib.SequenceMatcher(None, target_name, _normalize_name(candidate.get("title"))).ratio()
-    slug_ratio = difflib.SequenceMatcher(None, target_name, _normalize_name(candidate.get("slug"))).ratio()
-    return max(name_ratio, slug_ratio)
 
 
 def _rank_candidates(candidates, name, author=None):
     """Cascade: exact normalized name/slug -> author+name -> fuzzy similarity
     above threshold. Returns (forge_mod, match_method), or (None, None) if
     nothing is confident enough -- an unmatched mod is reported as
-    unmatched, never guessed."""
+    unmatched, never guessed.
+
+    Forge's display title and its URL slug are both fair game to compare
+    against -- the slug is already normalized (lowercase, hyphenated, no
+    punctuation), so it often lines up with a camelCase/dotted local name
+    far better than the display title does. Same approach Refringe's Check
+    Mods takes (max of a name-score and a slug-score)."""
     if not candidates:
         return None, None
     target_name = _normalize_name(name)
@@ -150,21 +130,28 @@ def _rank_candidates(candidates, name, author=None):
         return None, None
     target_author = _normalize_name(author)
 
-    for c in candidates:
-        if target_name in (_normalize_name(c.get("title")), _normalize_name(c.get("slug"))):
+    normed = [(c, _normalize_name(c.get("title")), _normalize_name(c.get("slug")))
+              for c in candidates]
+
+    for c, title_n, slug_n in normed:
+        if target_name in (title_n, slug_n):
             return c, "name_exact"
 
     if target_author:
-        for c in candidates:
-            title_n = _normalize_name(c.get("title"))
-            slug_n = _normalize_name(c.get("slug"))
+        for c, title_n, slug_n in normed:
             if (_normalize_name(c.get("author")) == target_author
                     and (target_name in title_n or target_name in slug_n)):
                 return c, "author_name"
 
+    # difflib caches preprocessing for the second sequence, so keep the
+    # shared target there and swap only the candidate side per comparison.
+    matcher = difflib.SequenceMatcher(None, "", target_name)
     best, best_ratio = None, 0.0
-    for c in candidates:
-        ratio = _best_score(target_name, c)
+    for c, title_n, slug_n in normed:
+        matcher.set_seq1(title_n)
+        ratio = matcher.ratio()
+        matcher.set_seq1(slug_n)
+        ratio = max(ratio, matcher.ratio())
         if ratio > best_ratio:
             best, best_ratio = c, ratio
     if best and best_ratio >= FUZZY_MATCH_THRESHOLD:
@@ -183,7 +170,7 @@ def match_one(local_mod):
     if not forge:
         candidates, matched_term = _search_by_name(local_mod.get("name"), guid)
         forge, match_method = _rank_candidates(
-            candidates, matched_term or local_mod.get("name"), local_mod.get("author"))
+            candidates, matched_term, local_mod.get("author"))
 
     if not forge:
         # filter[name] only matches a literal substring of the stored title,
@@ -193,8 +180,7 @@ def match_one(local_mod):
         # real fuzzy/full-text search -- last resort since it returns looser
         # candidates, still filtered through the same ranking cascade so a
         # weak match still can't slip through as a false positive.
-        time.sleep(_REQUEST_PACING_SECONDS)
-        candidates = lookup_by_query(local_mod.get("name") or "")
+        candidates = lookup_by_query(local_mod.get("name"))
         forge, match_method = _rank_candidates(
             candidates, local_mod.get("name"), local_mod.get("author"))
         if forge:
@@ -218,15 +204,14 @@ def match_one(local_mod):
 
 
 def match_local_mods(local_mods, on_progress=None):
-    """Match every locally-scanned mod against the Forge. on_progress(done,
-    total), if given, is called after each mod -- this is the slow part of a
-    scan (paced, per-mod network lookups), so it's the meaningful thing to
-    report progress against; the file-scan phase before this is fast."""
+    """Match every locally-scanned mod against the Forge. Request pacing and
+    rate-limit retry live in feed.py's request layer, not here. on_progress
+    (done, total), if given, is called after each mod -- this is the slow
+    part of a scan (per-mod network lookups), so it's the meaningful thing
+    to report progress against; the file-scan phase before it is fast."""
     results = []
     total = len(local_mods)
     for i, mod in enumerate(local_mods):
-        if i > 0:
-            time.sleep(_REQUEST_PACING_SECONDS)
         results.append(match_one(mod))
         if on_progress:
             on_progress(i + 1, total)

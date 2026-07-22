@@ -84,12 +84,18 @@ _PLACEHOLDER_ICON_SEGMENTS = [
     ((3, 16.5), (3, 14.25)),
 ]
 _PLACEHOLDER_SUPERSAMPLE = 4
+_placeholder_img = None
 
 
 def placeholder_thumb():
     """Render the same wireframe-cube "no thumbnail" placeholder the Forge
     website shows, via PIL supersample + LANCZOS downscale for anti-aliasing
-    (Tk/raw-bitmap primitives look jagged at this size otherwise)."""
+    (Tk/raw-bitmap primitives look jagged at this size otherwise). The
+    output is deterministic and this is called per mod-without-thumbnail on
+    every check cycle, so render once and reuse."""
+    global _placeholder_img
+    if _placeholder_img is not None:
+        return _placeholder_img
     w, h = THUMB_SIZE
     big_w, big_h = w * _PLACEHOLDER_SUPERSAMPLE, h * _PLACEHOLDER_SUPERSAMPLE
     img = Image.new("RGB", (big_w, big_h), SEPARATOR)
@@ -112,7 +118,8 @@ def placeholder_thumb():
         for px, py in (p0, p1):
             draw.ellipse([px - r, py - r, px + r, py + r], fill=TEXT_DIM)
 
-    return img.resize((w, h), Image.LANCZOS)
+    _placeholder_img = img.resize((w, h), Image.LANCZOS)
+    return _placeholder_img
 
 
 def purge_old_thumbs():

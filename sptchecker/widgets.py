@@ -273,9 +273,53 @@ class FramelessPopup(tk.Toplevel):
         y = self._drag_win_y + (e.y_root - self._drag_y)
         self.geometry(f"+{x}+{y}")
 
-    def _finish_show(self):
-        self.lift()
-        self.focus_force()
+    def resurface(self):
+        """Bring this popup back above the main window. Needed at first show
+        and after anything that can steal z-order from a frameless
+        (overrideredirect) window: a native dialog closing, or a background
+        thread's results arriving via root.after() once the main window has
+        re-taken focus."""
+        if self.winfo_exists():
+            self.lift()
+            self.focus_force()
+
+    def make_scroll_area(self, parent):
+        """Build the canvas + MiniScrollbar + inner-frame plumbing shared by
+        scrollable popups and return the inner content frame. The scrollbar
+        only appears once content actually overflows (_update_canvas_scrollbar),
+        and the wheel binding is global-per-hover so scrolling works anywhere
+        over the canvas, not just over child widgets."""
+        canvas = tk.Canvas(parent, bg=BG, highlightthickness=0)
+        scrollbar = MiniScrollbar(parent)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.set_command(canvas.yview)
+        canvas.pack(side="left", fill="both", expand=True)
+
+        inner = tk.Frame(canvas, bg=BG)
+        inner_id = canvas.create_window(0, 0, window=inner, anchor="nw")
+        inner.bind("<Configure>", lambda _e: _update_canvas_scrollbar(canvas, scrollbar))
+        canvas.bind("<Configure>", lambda e: (
+            canvas.itemconfigure(inner_id, width=e.width),
+            _update_canvas_scrollbar(canvas, scrollbar),
+        ))
+
+        def on_wheel(e):
+            canvas.yview_scroll(int(-e.delta / 40), "units")
+        canvas.bind("<Enter>", lambda _e: canvas.bind_all("<MouseWheel>", on_wheel))
+        canvas.bind("<Leave>", lambda _e: canvas.unbind_all("<MouseWheel>"))
+        return inner
+
+
+def flat_button(parent, text, command, font_size=8, **kw):
+    """The app's standard flat dark button; every button in the header and
+    popups shares this styling. Any tk.Button option can be overridden."""
+    opts = dict(
+        font=("Segoe UI", font_size), bg=CARD_BG, fg=TEXT,
+        activebackground=CARD_HOVER, activeforeground=TEXT_BRIGHT,
+        relief="flat", padx=8, pady=2, cursor="hand2",
+    )
+    opts.update(kw)
+    return tk.Button(parent, text=text, command=command, **opts)
 
 
 class ChangeNotesWindow(FramelessPopup):
@@ -329,7 +373,7 @@ class ChangeNotesWindow(FramelessPopup):
             cursor="hand2", command=lambda: webbrowser.open(mod.get("link", "")),
         ).pack(side="right")
 
-        self._finish_show()
+        self.resurface()
 
 
 def _blend(fg_hex, bg_hex, alpha):
@@ -372,17 +416,31 @@ def _update_canvas_scrollbar(canvas, scrollbar):
     """Sync a canvas's scrollregion to its content and show/hide the paired
     scrollbar based on whether the content actually overflows -- an empty,
     non-functional strip when everything already fits looks like a broken
-    control, not a nice one."""
-    canvas.update_idletasks()
-    bbox = canvas.bbox("all")
-    canvas.configure(scrollregion=bbox)
-    content_h = (bbox[3] - bbox[1]) if bbox else 0
-    if content_h > canvas.winfo_height():
-        if not scrollbar.winfo_ismapped():
-            scrollbar.pack(side="right", fill="y")
-            scrollbar.update_idletasks()
-    elif scrollbar.winfo_ismapped():
-        scrollbar.pack_forget()
+    control, not a nice one.
+
+    Coalesced via after_idle: packing N result rows fires N <Configure>
+    events, and doing a forced layout flush (update_idletasks) for each one
+    visibly stalls the UI while a long list builds."""
+    if getattr(canvas, "_scroll_sync_pending", False):
+        return
+    canvas._scroll_sync_pending = True
+
+    def sync():
+        canvas._scroll_sync_pending = False
+        if not canvas.winfo_exists():
+            return
+        canvas.update_idletasks()
+        bbox = canvas.bbox("all")
+        canvas.configure(scrollregion=bbox)
+        content_h = (bbox[3] - bbox[1]) if bbox else 0
+        if content_h > canvas.winfo_height():
+            if not scrollbar.winfo_ismapped():
+                scrollbar.pack(side="right", fill="y")
+                scrollbar.update_idletasks()
+        elif scrollbar.winfo_ismapped():
+            scrollbar.pack_forget()
+
+    canvas.after_idle(sync)
 
 
 class StatsWindow(FramelessPopup):
@@ -395,27 +453,7 @@ class StatsWindow(FramelessPopup):
 
         container = tk.Frame(self, bg=BG)
         container.pack(fill="both", expand=True)
-
-        canvas = tk.Canvas(container, bg=BG, highlightthickness=0)
-        scrollbar = MiniScrollbar(container)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        scrollbar.set_command(canvas.yview)
-        canvas.pack(side="left", fill="both", expand=True)
-        # Scrollbar is only packed once content actually overflows -- see
-        # _update_canvas_scrollbar.
-
-        inner = tk.Frame(canvas, bg=BG)
-        inner_id = canvas.create_window(0, 0, window=inner, anchor="nw")
-        inner.bind("<Configure>", lambda _e: _update_canvas_scrollbar(canvas, scrollbar))
-        canvas.bind("<Configure>", lambda e: (
-            canvas.itemconfigure(inner_id, width=e.width),
-            _update_canvas_scrollbar(canvas, scrollbar),
-        ))
-
-        def on_wheel(e):
-            canvas.yview_scroll(int(-e.delta / 40), "units")
-        canvas.bind("<Enter>", lambda _e: canvas.bind_all("<MouseWheel>", on_wheel))
-        canvas.bind("<Leave>", lambda _e: canvas.unbind_all("<MouseWheel>"))
+        inner = self.make_scroll_area(container)
 
         tk.Label(inner, text=f"{stats['total']:,} mods tracked", font=("Segoe UI", 13, "bold"),
                  fg=TEXT_BRIGHT, bg=BG, anchor="w").pack(fill="x", padx=16, pady=(16, 0))
@@ -429,7 +467,7 @@ class StatsWindow(FramelessPopup):
                             link_ids=stats.get("author_ids"), link_fallback=stats.get("author_links"))
         self._build_section(inner, "Top Categories (Last 30 Days)", stats["top_categories"], "mod")
 
-        self._finish_show()
+        self.resurface()
 
     def _build_trend(self, parent, daily_counts, daily_dates):
         if not daily_counts:
@@ -617,12 +655,7 @@ class LocalScanSettingsWindow(FramelessPopup):
         # claims its space first -- a long install path can no longer push
         # it out past the edge of this fixed-width window the way it could
         # when the label (which has no length limit) was packed first.
-        tk.Button(
-            path_row, text="Browse…", font=("Segoe UI", 8),
-            bg=CARD_BG, fg=TEXT, activebackground=CARD_HOVER,
-            activeforeground=TEXT_BRIGHT, relief="flat", padx=8, pady=2,
-            cursor="hand2", command=self._browse,
-        ).pack(side="right")
+        flat_button(path_row, "Browse…", self._browse).pack(side="right")
         self._path_lbl = tk.Label(path_row, text=self._display_path(), font=("Segoe UI", 8),
                                   fg=TEXT_DIM, bg=BG, anchor="w")
         self._path_lbl.pack(side="left", fill="x", expand=True)
@@ -630,12 +663,8 @@ class LocalScanSettingsWindow(FramelessPopup):
         self._validation_lbl = tk.Label(self, text="", font=("Segoe UI", 8), bg=BG, anchor="w")
         self._validation_lbl.pack(fill="x", padx=14, pady=(2, 10))
 
-        self._scan_btn = tk.Button(
-            self, text="Scan Now", font=("Segoe UI", 9),
-            bg=CARD_BG, fg=TEXT_BRIGHT, activebackground=CARD_HOVER,
-            activeforeground=TEXT_BRIGHT, relief="flat", padx=10, pady=4,
-            cursor="hand2", command=self._scan_now,
-        )
+        self._scan_btn = flat_button(self, "Scan Now", self._scan_now,
+                                     font_size=9, fg=TEXT_BRIGHT, padx=10, pady=4)
         self._scan_btn.pack(padx=14, pady=(0, 10), anchor="w")
 
         # Progress bar -- hidden until a scan is actually running (see
@@ -651,33 +680,15 @@ class LocalScanSettingsWindow(FramelessPopup):
         self._progress_canvas.pack(fill="x")
         self._progress_canvas.bind("<Configure>", lambda _e: self._draw_progress())
 
-        # Scrollable results area, same canvas+scrollbar shape as StatsWindow.
+        # Scrollable results area, shared plumbing with StatsWindow.
         container = tk.Frame(self, bg=BG)
         self._container = container
-        container.pack(fill="both", expand=True, padx=0, pady=(0, 14))
-
-        canvas = tk.Canvas(container, bg=BG, highlightthickness=0)
-        scrollbar = MiniScrollbar(container)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        scrollbar.set_command(canvas.yview)
-        canvas.pack(side="left", fill="both", expand=True, padx=(14, 0))
-
-        self._results_frame = tk.Frame(canvas, bg=BG)
-        inner_id = canvas.create_window(0, 0, window=self._results_frame, anchor="nw")
-        self._results_frame.bind("<Configure>", lambda _e: _update_canvas_scrollbar(canvas, scrollbar))
-        canvas.bind("<Configure>", lambda e: (
-            canvas.itemconfigure(inner_id, width=e.width),
-            _update_canvas_scrollbar(canvas, scrollbar),
-        ))
-
-        def on_wheel(e):
-            canvas.yview_scroll(int(-e.delta / 40), "units")
-        canvas.bind("<Enter>", lambda _e: canvas.bind_all("<MouseWheel>", on_wheel))
-        canvas.bind("<Leave>", lambda _e: canvas.unbind_all("<MouseWheel>"))
+        container.pack(fill="both", expand=True, padx=(14, 0), pady=(0, 14))
+        self._results_frame = self.make_scroll_area(container)
 
         self._update_validation()
         self._set_message("Click Scan Now to check your installed mods against the Forge.")
-        self._finish_show()
+        self.resurface()
 
     def _display_path(self):
         if not self._spt_path:
@@ -696,17 +707,14 @@ class LocalScanSettingsWindow(FramelessPopup):
         self._update_validation()
 
     def _browse(self):
-        # This popup is frameless (overrideredirect), so it can fall behind
-        # the main window once the native folder picker closes -- lift() +
-        # focus_force() puts it back above the main window specifically.
-        # Deliberately NOT using -topmost here: that would keep it above
-        # the folder picker too while it's open, forcing the user to drag
-        # the picker out from under our popup just to see their folders.
+        # Deliberately NOT using -topmost to survive the native folder
+        # picker: that would keep this popup above the picker too, forcing
+        # the user to drag the picker out from under it just to see their
+        # folders. resurface() afterwards is enough.
         chosen = filedialog.askdirectory(
             parent=self, initialdir=self._spt_path or None, title="Select your SPT install folder",
         )
-        self.lift()
-        self.focus_force()
+        self.resurface()
         if not chosen:
             return
         self._spt_path = chosen
@@ -728,9 +736,7 @@ class LocalScanSettingsWindow(FramelessPopup):
         self._scan_btn.configure(state="normal" if (valid and self._enabled_var.get()) else "disabled")
 
     def _scan_now(self):
-        self._scan_btn.configure(state="disabled", text="Scanning…")
-        self._set_message("Scanning your mod folders…")
-        self._show_progress()
+        self.set_scanning()
         self._on_scan_now()
 
     def _clear_results(self):
@@ -745,26 +751,29 @@ class LocalScanSettingsWindow(FramelessPopup):
             fill="x", padx=14, pady=10, anchor="w")
 
     def set_scanning(self):
+        """Put the whole window into its scanning state: button disabled,
+        message shown, progress bar visible. Also called by the app when the
+        window is opened while a scan is already running."""
+        self._scan_btn.configure(state="disabled", text="Scanning…")
         self._set_message("Scanning your mod folders…")
-        self._show_progress()
-
-    def set_error(self, msg):
-        self._scan_btn.configure(state="normal", text="Scan Now")
-        self._hide_progress()
-        self._set_message(f"Scan failed: {msg}")
-        self._resurface()
-
-    # ── Progress bar ──────────────────────────────────────────────────
-
-    def _show_progress(self):
         self._progress_frac = 0.0
         self._progress_lbl.configure(text="Reading installed mods…")
         self._draw_progress()
+        self._show_progress_frame()
+
+    def set_error(self, msg):
+        self._scan_btn.configure(state="normal", text="Scan Now")
+        self._progress_frame.pack_forget()
+        self._set_message(f"Scan failed: {msg}")
+        self.resurface()
+
+    # ── Progress bar ──────────────────────────────────────────────────
+
+    def _show_progress_frame(self):
+        # Packed/unpacked rather than left empty so it takes zero space
+        # between scans instead of leaving an odd gap.
         if not self._progress_frame.winfo_ismapped():
             self._progress_frame.pack(fill="x", padx=14, pady=(0, 8), before=self._container)
-
-    def _hide_progress(self):
-        self._progress_frame.pack_forget()
 
     def _draw_progress(self):
         self._progress_canvas.delete("all")
@@ -781,23 +790,10 @@ class LocalScanSettingsWindow(FramelessPopup):
         # not to need it.
         if total <= 0:
             return
-        if not self._progress_frame.winfo_ismapped():
-            self._progress_frame.pack(fill="x", padx=14, pady=(0, 8), before=self._container)
+        self._show_progress_frame()
         self._progress_lbl.configure(text=f"Checking mod {done} of {total} against the Forge…")
         self._progress_frac = min(1.0, done / total)
         self._draw_progress()
-
-    def _resurface(self):
-        # The scan runs on a background thread and this is called back via
-        # root.after(0, ...) once it's done -- by then the main window has
-        # often regained focus/z-order (it's still ticking its own timer,
-        # handling tray events, etc.), which pushes this frameless popup
-        # behind it. Without this, a finished scan looks like the window
-        # silently closed, when it's actually just sitting behind the main
-        # one with the results already in it.
-        if self.winfo_exists():
-            self.lift()
-            self.focus_force()
 
     def _add_section_header(self, text, color=TEXT_BRIGHT):
         """A full-width colored band rather than plain inline text -- these
@@ -827,7 +823,7 @@ class LocalScanSettingsWindow(FramelessPopup):
 
     def set_results(self, results):
         self._scan_btn.configure(state="normal", text="Scan Now")
-        self._hide_progress()
+        self._progress_frame.pack_forget()
         self._clear_results()
 
         updates = [r for r in results if r["update_available"]]
@@ -846,12 +842,8 @@ class LocalScanSettingsWindow(FramelessPopup):
         if updates:
             header_row = self._add_section_header("Updates Available", color=ACCENT_UPD)
             links = [r["forge"]["link"] for r in updates]
-            tk.Button(
-                header_row, text="Open All", font=("Segoe UI", 7),
-                bg=CARD_BG, fg=TEXT, activebackground=CARD_HOVER,
-                activeforeground=TEXT_BRIGHT, relief="flat", padx=6, pady=1,
-                cursor="hand2", command=lambda links=links: self._open_all(links),
-            ).pack(side="right", padx=(0, 10))
+            flat_button(header_row, "Open All", lambda links=links: self._open_all(links),
+                        font_size=7, padx=6, pady=1).pack(side="right", padx=(0, 10))
 
             for r in updates:
                 local, forge = r["local"], r["forge"]
@@ -884,7 +876,7 @@ class LocalScanSettingsWindow(FramelessPopup):
                 name = r["local"].get("name") or "(unknown)"
                 self._add_plain_row(f"{name}  —  v{r['local'].get('version') or '?'}")
 
-        self._resurface()
+        self.resurface()
 
 
 def _relative_time(ts_str):

@@ -33,18 +33,30 @@ def set_dpi_aware():
 
 
 _SWP_FLAGS = 0x2 | 0x1 | 0x4 | 0x20  # NOMOVE | NOSIZE | NOZORDER | FRAMECHANGED
+_DWMWA_TRANSITIONS_FORCEDISABLED = 3
+
+
+def _set_dwm_attribute(window, attr, value=1):
+    """Set a DWM window attribute on a Tk window's real top-level hwnd.
+    Returns (hwnd, api_result); raises only on ctypes-level errors --
+    callers wrap in their own try/except."""
+    hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
+    c_value = ctypes.c_int(value)
+    result = ctypes.windll.dwmapi.DwmSetWindowAttribute(
+        hwnd, attr, ctypes.byref(c_value), ctypes.sizeof(c_value)
+    )
+    return hwnd, result
 
 
 def set_dark_title_bar(window, show=True):
     try:
         window.withdraw()
         window.update_idletasks()
-        hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
-        value = ctypes.c_int(1)
+        # 20 is DWMWA_USE_IMMERSIVE_DARK_MODE on current Windows; 19 is the
+        # pre-20H1 value of the same attribute, tried only as a fallback.
         for attr in (20, 19):
-            if ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                hwnd, attr, ctypes.byref(value), ctypes.sizeof(value)
-            ) == 0:
+            hwnd, result = _set_dwm_attribute(window, attr)
+            if result == 0:
                 break
         # DwmSetWindowAttribute alone doesn't always repaint the non-client
         # frame -- force Windows to redraw the title bar with the new value.
@@ -56,9 +68,6 @@ def set_dark_title_bar(window, show=True):
             window.deiconify()
 
 
-_DWMWA_TRANSITIONS_FORCEDISABLED = 3
-
-
 def disable_show_animation(window):
     """Stop Windows from playing its fade/expand animation when the window
     comes back from withdraw() -- that animation is what exposes an
@@ -66,11 +75,7 @@ def disable_show_animation(window):
     repaint catches up, which is what looks like a "white flash" when
     restoring from the tray."""
     try:
-        hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
-        value = ctypes.c_int(1)
-        ctypes.windll.dwmapi.DwmSetWindowAttribute(
-            hwnd, _DWMWA_TRANSITIONS_FORCEDISABLED, ctypes.byref(value), ctypes.sizeof(value)
-        )
+        _set_dwm_attribute(window, _DWMWA_TRANSITIONS_FORCEDISABLED)
     except Exception:
         pass
 
