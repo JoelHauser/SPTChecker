@@ -11,7 +11,7 @@ from .config import API_MOD_URL, API_URL, DC_NS, FEED_URL, FEED_UPDATED_URL
 _MOD_ID_RE = re.compile(r"/mod/(\d+)/")
 
 _session = requests.Session()
-_session.headers["User-Agent"] = "SPTModChecker/2.3.0"
+_session.headers["User-Agent"] = "SPTModChecker/3.0.0"
 
 _API_HEADERS = {"Accept": "application/json"}
 
@@ -143,10 +143,10 @@ def lookup_by_query(term):
     filter[name] only matches a term that's a literal substring of the
     stored title -- it can't bridge a local mod's internal name (often
     camelCase/dotted developer shorthand) to a differently-worded Forge
-    listing. `query=` is a separate, undocumented parameter (found by
-    reading Refringe's Check Mods CLI source, confirmed live) that does
-    real fuzzy matching instead, at the cost of returning looser candidates
-    -- callers still need to rank results themselves, same as lookup_by_name.
+    listing. `query=` is a separate, undocumented parameter (confirmed live
+    against the API) that does real fuzzy matching instead, at the cost of
+    returning looser candidates -- callers still need to rank results
+    themselves, same as lookup_by_name.
     """
     return _fetch_mods({"query": term, "per_page": 20}) if term else []
 

@@ -1,8 +1,7 @@
 // ModReader: reads a scan request as JSON on stdin and writes extracted mod
 // metadata as JSON to stdout. Exists so SPTChecker (Python) can get real
 // CLR reflection over installed mod DLLs instead of hand-parsing ECMA-335
-// bytes and guessing at bytecode shapes -- the same approach Refringe's
-// Check Mods CLI uses, just invoked as a subprocess rather than natively.
+// bytes and guessing at bytecode shapes.
 //
 // Both readers load the target DLL into a private, collectible
 // AssemblyLoadContext (not MetadataLoadContext -- that needs the runtime's
@@ -20,9 +19,8 @@
 // Server (SPT v4) mods can't be read that way -- their metadata only exists
 // as real property values on a constructed subclass of AbstractModMetadata,
 // so that path does actually instantiate the type and execute whatever code
-// that involves, same as Refringe's tool does. That's an intentional,
-// accepted trade-off: these are mods the user already runs on their own
-// server.
+// that involves. That's an intentional, accepted trade-off: these are mods
+// the user already runs on their own server.
 
 using System.Reflection;
 using System.Runtime.Loader;

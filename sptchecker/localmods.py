@@ -3,8 +3,8 @@ import subprocess
 from pathlib import Path
 
 from .config import (
-    BEPINEX_PLUGINS_SUBPATH, LEGACY_SERVER_MODS_SUBPATH, MODREADER_EXE,
-    MODREADER_TIMEOUT_SECONDS, SERVER_MODS_SUBPATH,
+    BEPINEX_PLUGINS_SUBPATH, CORE_SPT_NAME_PREFIX, LEGACY_SERVER_MODS_SUBPATH,
+    MODREADER_EXE, MODREADER_TIMEOUT_SECONDS, SERVER_MODS_SUBPATH,
 )
 
 _CREATE_NO_WINDOW = 0x08000000  # avoid a console flash launching a console-mode exe from the GUI app
@@ -89,6 +89,18 @@ def _parse_legacy_manifest(manifest_path):
     }
 
 
+def _is_core_spt_component(record):
+    """SPT's own bundled DLLs (SPT.Common, SPT.Reflection, ...) can sit in
+    the same folder shapes as real mods and get scanned right alongside
+    them -- filter by name/guid prefix rather than skipping them at
+    discovery time, since ModReader still needs to read them to tell them
+    apart from an actual mod living in the same folder."""
+    prefix = CORE_SPT_NAME_PREFIX
+    name = (record.get("name") or "").lower()
+    guid = (record.get("guid") or "").lower()
+    return name.startswith(prefix) or guid.startswith(prefix)
+
+
 def validate_spt_root(path):
     """Quick sanity check for the folder picker: does this look like an SPT
     install? Checks both the client plugin dir and the v4 server mods dir."""
@@ -134,4 +146,4 @@ def scan_installed_mods(spt_root):
         if record:
             results.append(record)
 
-    return results
+    return [r for r in results if not _is_core_spt_component(r)]

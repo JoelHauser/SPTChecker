@@ -65,7 +65,7 @@ class SPTCheckerApp:
 
         set_dpi_aware()
         self.root = tk.Tk()
-        self.root.title("SPT Mod Checker v2.3.0")
+        self.root.title("SPT Mod Checker v3.0.0")
         self.root.configure(bg=BG)
         self.root.geometry(self._load_geometry())
         self.root.minsize(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)

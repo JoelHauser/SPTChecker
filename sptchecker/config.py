@@ -47,6 +47,11 @@ BEPINEX_PLUGINS_SUBPATH = "BepInEx/plugins"
 SERVER_MODS_SUBPATH = "SPT/user/mods"
 LEGACY_SERVER_MODS_SUBPATH = "user/mods"
 FUZZY_MATCH_THRESHOLD = 0.82
+# Every SPT install ships with its own core components (SPT.Common,
+# SPT.Reflection, etc.) sitting in the same folder shapes as real mods --
+# these were never published to the Forge, so every user would otherwise see
+# them show up as permanent "Not Found on Forge" clutter.
+CORE_SPT_NAME_PREFIX = "spt."
 # Standalone .NET helper (see modreader/) that reads real mod metadata via
 # actual CLR reflection -- built separately via `dotnet publish` and copied
 # into assets/, not built by PyInstaller itself.

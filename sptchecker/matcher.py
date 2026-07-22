@@ -53,7 +53,7 @@ def _guid_derived_name(guid):
     """The last reverse-domain segment of a GUID is often the mod's actual
     name with the author's own prefix already stripped off for free (e.g.
     'com.kipperworks.gunsmithbarters' -> 'gunsmithbarters') -- worth trying
-    as its own search term, same as Refringe's Check Mods does."""
+    as its own search term."""
     if not guid or "." not in guid:
         return None
     return guid.rsplit(".", 1)[-1]
@@ -69,11 +69,11 @@ def _search_terms(name, guid=None):
     'TaskAutomation' won't match a Forge title of 'Task Automation', and a
     local 'Modern Weapon Mods (MWM) Client' won't match a Forge title of
     'Modern Weapon Mods (MWM)' (the search term must fit *inside* the title,
-    not the other way around). Confirmed against the live API. Refringe's
-    Check Mods CLI uses the same transforms (suffix-strip, camelCase split,
-    GUID-derived name) for the same reasons; the author-prefix strip below
-    is this app's own addition, for names like 'Kipperworks.GunsmithBarters'
-    where the author's own name is prepended ahead of the actual mod name.
+    not the other way around). Confirmed against the live API -- suffix
+    stripping, camelCase splitting, and a GUID-derived name variant all help
+    bridge that gap; the author-prefix strip below handles names like
+    'Kipperworks.GunsmithBarters' where the author's own name is prepended
+    ahead of the actual mod name.
     """
     terms = []
     if name:
@@ -121,8 +121,8 @@ def _rank_candidates(candidates, name, author=None):
     Forge's display title and its URL slug are both fair game to compare
     against -- the slug is already normalized (lowercase, hyphenated, no
     punctuation), so it often lines up with a camelCase/dotted local name
-    far better than the display title does. Same approach Refringe's Check
-    Mods takes (max of a name-score and a slug-score)."""
+    far better than the display title does, so the ranking takes the max
+    of a name-score and a slug-score."""
     if not candidates:
         return None, None
     target_name = _normalize_name(name)
@@ -176,10 +176,10 @@ def match_one(local_mod):
         # filter[name] only matches a literal substring of the stored title,
         # which structurally can't bridge every gap between a mod's internal
         # name and its Forge listing. query= is a separate, undocumented
-        # parameter (the same one Refringe's Check Mods CLI uses) that does
-        # real fuzzy/full-text search -- last resort since it returns looser
-        # candidates, still filtered through the same ranking cascade so a
-        # weak match still can't slip through as a false positive.
+        # parameter that does real fuzzy/full-text search -- last resort
+        # since it returns looser candidates, still filtered through the
+        # same ranking cascade so a weak match still can't slip through as
+        # a false positive.
         candidates = lookup_by_query(local_mod.get("name"))
         forge, match_method = _rank_candidates(
             candidates, local_mod.get("name"), local_mod.get("author"))

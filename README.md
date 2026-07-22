@@ -50,9 +50,9 @@ It can also do the reverse: point it at your SPT install folder and it'll scan y
 Click **Local Mods** to check your own installed mods against the Forge — entirely optional and off by default:
 
 1. Point it at your SPT install folder (validated automatically — it checks for `BepInEx/plugins` or `SPT/user/mods`).
-2. Click **Scan Now**. The app reads each installed mod's real identity directly from its compiled files — BepInEx client plugins' `BepInPlugin` metadata and SPT v4 server mods' declared metadata — rather than guessing from filenames.
-3. Each mod is matched against the Forge (exact ID lookup first, falling back to a name search + fuzzy ranking) and grouped into:
-   - **Updates Available** — shown as full mod cards (thumbnail, version diff, changelog, right-click menu — same as the main feed)
+2. Click **Scan Now**. Rather than guessing a mod's identity from its filename or source code shape, the app reads each mod's *real* declared metadata via actual .NET reflection, so it works no matter how a mod author's code is structured. A progress bar tracks each mod as it's checked against the Forge.
+3. Each mod is matched against the Forge (exact ID lookup first, falling back to a smarter name search — handling camelCase/dotted internal names, author-prefixed names, and a full-text fallback search — then fuzzy ranking) and grouped into:
+   - **Updates Available** — shown as full mod cards (thumbnail, version diff, changelog, right-click menu — same as the main feed), with an **Open All** button to launch every one of those mod pages in your browser at once
    - **Up to Date** — a simple clickable list linking to each mod's Forge page
    - **Not Found on Forge** — mods that couldn't be matched
 4. A toast notification fires if any installed mods have updates available.
