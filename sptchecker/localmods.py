@@ -1,101 +1,48 @@
 import json
-import re
+import subprocess
 from pathlib import Path
 
-from . import dotnet_meta as dm
-from .config import BEPINEX_PLUGINS_SUBPATH, LEGACY_SERVER_MODS_SUBPATH, SERVER_MODS_SUBPATH
+from .config import (
+    BEPINEX_PLUGINS_SUBPATH, LEGACY_SERVER_MODS_SUBPATH, MODREADER_EXE,
+    MODREADER_TIMEOUT_SECONDS, SERVER_MODS_SUBPATH,
+)
 
-_MAX_SCAN_BYTES = 100 * 1024 * 1024
-
-_GUID_RE = re.compile(r"^(?=.*[a-z])[a-z0-9_-]+(\.[a-z0-9_-]+){1,4}$", re.IGNORECASE)
-_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(\.\d+)?$")
-# Dotted strings ending in a common file extension are filenames referenced in
-# code (e.g. "config.json"), not a mod's GUID -- same shape as a real 2-segment
-# GUID otherwise, so this can't be caught by the GUID regex alone.
-_FILE_EXTENSIONS = {
-    "json", "jsonc", "dll", "txt", "xml", "config", "png", "jpg", "jpeg",
-    "cs", "pdb", "ini", "yaml", "yml", "bundle", "db",
-}
+_CREATE_NO_WINDOW = 0x08000000  # avoid a console flash launching a console-mode exe from the GUI app
 
 
-def _looks_like_guid(s):
-    return bool(_GUID_RE.match(s)) and s.rsplit(".", 1)[-1].lower() not in _FILE_EXTENSIONS
+def _run_modreader(spt_root, client_dlls, server_dlls):
+    """Run the ModReader.exe helper once for the whole batch (not per-DLL --
+    process startup cost adds up fast otherwise) and return its parsed
+    {"client": {...}, "server": {...}} response, keyed by DLL path.
 
-
-def _load_assembly(dll_path):
-    try:
-        size = dll_path.stat().st_size
-        if size == 0 or size > _MAX_SCAN_BYTES:
-            return None
-        return dm.load(dll_path)
-    except (OSError, dm.MetadataError):
-        return None
-
-
-def _extract_client_plugin(dll_path):
-    """BepInEx client plugins: resolve the BepInPlugin custom attribute by
-    its actual declaring type name (real assembly metadata, not a guess from
-    string shapes -- immune to case, unrelated adjacent attributes like
-    BepInDependency, etc.) and decode its 3 constructor string args."""
-    meta = _load_assembly(dll_path)
-    if meta is None:
-        return None
-    try:
-        matches = [
-            meta.decode_fixed_string_args(blob, 3)
-            for name, blob in meta.custom_attributes()
-            if name == "BepInPlugin"
-        ]
-    except Exception:
-        return None
-    matches = [m for m in matches if m and all(m)]
-    if len(matches) != 1:
-        return None
-    guid, name, version = matches[0]
-    return {"guid": guid, "name": name, "version": version}
-
-
-def _extract_server_mod(dll_path):
-    """SPT v4 server mods: ModMetadata is built via a positional record
-    constructor (`new ModMetadata("guid", "name", ..., "license")`), which
-    Roslyn compiles to a flat run of `ldstr` pushes into one `call .ctor` --
-    not an object-initializer's dup/ldstr/call-setter pattern (real mods'
-    disassembly confirmed this; field order isn't consistent between mods
-    either, e.g. GUID first in some, last in others). So this collects each
-    constructor call's string arguments via dotnet_meta's generic IL scan,
-    then classifies them by shape rather than assuming a fixed position --
-    same approach the original byte-scan heuristic used, just scoped to real
-    ldstr literals from actual method bodies instead of raw file bytes,
-    which is far less prone to matching unrelated nearby strings.
+    ModReader does the actual extraction via real CLR reflection (see
+    modreader/Program.cs) instead of guessing at compiled bytecode shapes --
+    it can read any mod regardless of what code the author used to build
+    their metadata, which no amount of static-pattern-matching in Python
+    ever could. Returns empty results (not a crash) if the helper is
+    missing or fails; a scan finding nothing is expected/recoverable, same
+    as any other per-mod extraction failure.
     """
-    meta = _load_assembly(dll_path)
-    if meta is None:
-        return None
+    if not MODREADER_EXE.exists():
+        return {"client": {}, "server": {}}
+
+    request = {
+        "sptRoot": str(spt_root),
+        "clientDlls": [str(p) for p in client_dlls],
+        "serverDlls": [str(p) for p in server_dlls],
+    }
     try:
-        clusters = list(dm.iter_ctor_arg_strings(meta))
+        proc = subprocess.run(
+            [str(MODREADER_EXE)],
+            input=json.dumps(request),
+            capture_output=True,
+            text=True,
+            timeout=MODREADER_TIMEOUT_SECONDS,
+            creationflags=_CREATE_NO_WINDOW,
+        )
+        return json.loads(proc.stdout)
     except Exception:
-        return None
-
-    matches = []
-    for strings in clusters:
-        guid = next((s for s in strings if _looks_like_guid(s)), None)
-        version = next((s for s in strings if _VERSION_RE.match(s)), None)
-        if guid and version:
-            matches.append({"guid": guid, "version": version})
-    if len(matches) != 1:
-        return None
-    return matches[0]
-
-
-def extract_mod_metadata(dll_path, mode):
-    """Best-effort extraction of a compiled mod's declared guid/name/version
-    from its real .NET assembly metadata. Returns None on failure or
-    ambiguity rather than raising -- most DLLs in a plugins folder are
-    dependencies, not the plugin itself, and that's expected, not an error.
-    """
-    if mode == "attribute":
-        return _extract_client_plugin(dll_path)
-    return _extract_server_mod(dll_path)
+        return {"client": {}, "server": {}}
 
 
 def find_bepinex_plugins(spt_root):
@@ -151,24 +98,36 @@ def validate_spt_root(path):
 
 def scan_installed_mods(spt_root):
     """Scan an SPT install for locally installed mods. Each record has
-    source/path/guid/name/version (and author, for legacy manifests only);
-    entries where extraction failed are skipped rather than included with
-    missing data."""
+    source/path/guid/name/version (and author/spt_version, when the reader
+    found them); entries where extraction failed are skipped rather than
+    included with missing data."""
     results = []
 
-    for dll_path in find_bepinex_plugins(spt_root):
-        meta = extract_mod_metadata(dll_path, mode="attribute")
-        if meta:
-            results.append({"source": "client", "path": str(dll_path), **meta})
+    client_dlls = find_bepinex_plugins(spt_root)
+    server_dlls = find_server_mods(spt_root)
+    reader_output = _run_modreader(spt_root, client_dlls, server_dlls)
+    client_meta = reader_output.get("client", {})
+    server_meta = reader_output.get("server", {})
 
-    for dll_path in find_server_mods(spt_root):
-        meta = extract_mod_metadata(dll_path, mode="record")
-        if meta:
-            # The server extractor can't reliably pull a display name out of
-            # the IL (see _extract_server_mod); the mod's folder name is
-            # always accurate.
-            meta["name"] = dll_path.parent.name
-            results.append({"source": "server", "path": str(dll_path), **meta})
+    for dll_path in client_dlls:
+        meta = client_meta.get(str(dll_path))
+        if meta and not meta.get("error") and meta.get("guid"):
+            results.append({
+                "source": "client", "path": str(dll_path), "guid": meta.get("guid"),
+                "name": meta.get("name"), "version": meta.get("version"),
+            })
+
+    for dll_path in server_dlls:
+        meta = server_meta.get(str(dll_path))
+        if meta and not meta.get("error") and meta.get("guid"):
+            results.append({
+                "source": "server", "path": str(dll_path), "guid": meta.get("guid"),
+                # The folder name is always accurate even when the mod's own
+                # Name property is missing or blank.
+                "name": meta.get("name") or dll_path.parent.name,
+                "author": meta.get("author"), "version": meta.get("version"),
+                "spt_version": meta.get("sptVersion"),
+            })
 
     for manifest_path in find_legacy_server_mods(spt_root):
         record = _parse_legacy_manifest(manifest_path)

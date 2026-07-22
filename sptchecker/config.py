@@ -47,6 +47,11 @@ BEPINEX_PLUGINS_SUBPATH = "BepInEx/plugins"
 SERVER_MODS_SUBPATH = "SPT/user/mods"
 LEGACY_SERVER_MODS_SUBPATH = "user/mods"
 FUZZY_MATCH_THRESHOLD = 0.82
+# Standalone .NET helper (see modreader/) that reads real mod metadata via
+# actual CLR reflection -- built separately via `dotnet publish` and copied
+# into assets/, not built by PyInstaller itself.
+MODREADER_EXE = ASSETS_DIR / "ModReader.exe"
+MODREADER_TIMEOUT_SECONDS = 120
 
 # ── Window ─────────────────────────────────────────────────────────────
 
