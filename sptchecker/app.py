@@ -8,7 +8,7 @@ import pystray
 from PIL import Image, ImageDraw, ImageTk
 
 from .config import (
-    ACCENT_NEW, ACCENT_UPD, BG, CARD_BG, CARD_HOVER,
+    ACCENT_NEW, ACCENT_UPD, BG, CARD_BG,
     CATEGORY_COLOR_DEFAULT, CATEGORY_COLORS,
     CHECK_INTERVAL_MINUTES,
     DISPLAY_FIELDS, FORGE_URL, MAX_PER_CATEGORY,
@@ -16,14 +16,17 @@ from .config import (
     WINDOW_DEFAULT_GEOMETRY, WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH,
 )
 from .feed import check_mod_published, fetch_feeds
+from .localmods import scan_installed_mods
+from .matcher import match_local_mods
 from .platform import (
-    badge_icon, is_startup_enabled, load_app_icon, refresh_startup_if_stale,
-    send_toast, set_dark_title_bar, set_dpi_aware, set_startup_enabled,
+    badge_icon, disable_show_animation, is_startup_enabled, load_app_icon,
+    refresh_startup_if_stale, send_toast, set_dark_title_bar, set_dpi_aware,
+    set_startup_enabled,
 )
 from .state import (
     compute_stats, download_thumb, load_state, placeholder_thumb, purge_old_thumbs, save_state,
 )
-from .widgets import ModCard, StatsWindow
+from .widgets import LocalScanSettingsWindow, ModCard, StatsWindow, flat_button
 
 _ICON_SUPERSAMPLE = 4
 
@@ -62,20 +65,26 @@ class SPTCheckerApp:
 
         set_dpi_aware()
         self.root = tk.Tk()
-        self.root.title("SPT Mod Checker v2.3.0")
+        self.root.title("SPTChecker")
         self.root.configure(bg=BG)
         self.root.geometry(self._load_geometry())
         self.root.minsize(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
 
         set_dark_title_bar(self.root, show=not start_hidden)
+        disable_show_animation(self.root)
 
         self._app_icon = load_app_icon()
         self._icon_photo = ImageTk.PhotoImage(self._app_icon.resize((32, 32), Image.LANCZOS))
         self.root.iconphoto(True, self._icon_photo)
 
-        self._photos = []
+        self._photos = {}  # frame -> PhotoImage refs for its current cards
         self._checking = False
+        self._scanning = False
+        self._local_scan_window = None
         self._next_check_ts = None
+        self._timer_after_id = None
+        self._new_sig = None
+        self._upd_sig = None
         self._tray = None
         self._unread_count = 0
         self._visible = not start_hidden
@@ -92,6 +101,8 @@ class SPTCheckerApp:
         self.root.protocol("WM_DELETE_WINDOW", self._hide_to_tray)
 
         self.root.after(400, self._check_now)
+        if self.state.get("local_scan_enabled") and self.state.get("spt_install_path"):
+            self.root.after(800, self._scan_local_now)
 
     # ── Window geometry ─────────────────────────────────────────────────
 
@@ -126,20 +137,10 @@ class SPTCheckerApp:
         self._legend_icon.bind("<Enter>", self._legend_enter)
         self._legend_icon.bind("<Leave>", self._legend_leave)
 
-        stats_btn = tk.Button(
-            hdr, text="Stats", font=("Segoe UI", 8),
-            bg=CARD_BG, fg=TEXT, activebackground=CARD_HOVER,
-            activeforeground=TEXT_BRIGHT, relief="flat", padx=8, pady=2,
-            cursor="hand2", command=self._show_stats,
-        )
-        stats_btn.pack(side="left", padx=(6, 0))
+        flat_button(hdr, "Stats", self._show_stats).pack(side="left", padx=(6, 0))
+        flat_button(hdr, "Local Mods", self._show_local_scan).pack(side="left", padx=(6, 0))
 
-        self._btn = tk.Button(
-            hdr, text="Check Now", font=("Segoe UI", 8),
-            bg=CARD_BG, fg=TEXT, activebackground=CARD_HOVER,
-            activeforeground=TEXT_BRIGHT, relief="flat", padx=8, pady=2,
-            cursor="hand2", command=self._check_now,
-        )
+        self._btn = flat_button(hdr, "Check Now", self._check_now)
         self._btn.pack(side="right")
         self._tooltip_id = None
         self._tooltip_win = None
@@ -285,6 +286,91 @@ class SPTCheckerApp:
         stats = compute_stats(self.state.get("mods", {}))
         StatsWindow(self.root, stats)
 
+    # ── Local mod scan (opt-in) ───────────────────────────────────────
+
+    def _show_local_scan(self):
+        if self._local_scan_window and self._local_scan_window.winfo_exists():
+            self._local_scan_window.resurface()
+            return
+        self._local_scan_window = LocalScanSettingsWindow(
+            self.root,
+            enabled=self.state.get("local_scan_enabled", False),
+            spt_path=self.state.get("spt_install_path", ""),
+            on_toggle=self._toggle_local_scan,
+            on_path_change=self._set_local_scan_path,
+            on_scan_now=self._scan_local_now,
+        )
+        if self._scanning:
+            # A scan is already running (e.g. the startup auto-scan) --
+            # reflect that instead of showing an idle Scan Now state.
+            self._local_scan_window.set_scanning()
+        else:
+            cached = self.state.get("local_scan_results")
+            if cached:
+                self._local_scan_window.set_results(cached)
+
+    def _toggle_local_scan(self, enabled):
+        self.state["local_scan_enabled"] = enabled
+        save_state(self.state)
+
+    def _set_local_scan_path(self, path):
+        self.state["spt_install_path"] = path
+        save_state(self.state)
+
+    def _scan_local_now(self):
+        if self._scanning:
+            return
+        self._scanning = True
+        threading.Thread(target=self._bg_scan_local, daemon=True).start()
+
+    def _bg_scan_local(self):
+        try:
+            spt_path = self.state.get("spt_install_path", "")
+            local_mods = scan_installed_mods(spt_path)
+            results = match_local_mods(
+                local_mods,
+                on_progress=lambda done, total: self.root.after(
+                    0, self._update_scan_progress, done, total),
+            )
+            for r in results:
+                if r["update_available"]:
+                    # May be None -- the widget falls back to its shared
+                    # placeholder, no need to render one per mod here.
+                    r["_pil"] = download_thumb(r["forge"].get("thumb_url"))
+            # _pil (a PIL Image) isn't JSON-serializable -- persist a stripped
+            # copy, and do the JSON write here on the worker thread so the UI
+            # callback only touches widgets.
+            self.state["local_scan_results"] = [
+                {k: v for k, v in r.items() if k != "_pil"} for r in results
+            ]
+            save_state(self.state)
+            self.root.after(0, self._apply_local_scan, results)
+        except Exception as exc:
+            self.root.after(0, self._on_local_scan_error, str(exc))
+
+    def _apply_local_scan(self, results):
+        self._scanning = False
+        if self._local_scan_window and self._local_scan_window.winfo_exists():
+            self._local_scan_window.set_results(results)
+
+        updates = [r for r in results if r["update_available"]]
+        if updates:
+            self._send_list_toast(
+                f"{len(updates)} Installed Mod{'s' if len(updates) != 1 else ''} Can Be Updated",
+                [f"{r['forge']['title']} {r['current_version']} → {r['available_version']}"
+                 for r in updates],
+                [r["forge"]["link"] for r in updates],
+            )
+
+    def _on_local_scan_error(self, msg):
+        self._scanning = False
+        if self._local_scan_window and self._local_scan_window.winfo_exists():
+            self._local_scan_window.set_error(msg)
+
+    def _update_scan_progress(self, done, total):
+        if self._local_scan_window and self._local_scan_window.winfo_exists():
+            self._local_scan_window.set_progress(done, total)
+
     # ── System tray ────────────────────────────────────────────────────
 
     def _setup_tray(self):
@@ -297,7 +383,7 @@ class SPTCheckerApp:
             pystray.MenuItem("Quit", self._tray_quit),
         )
         self._tray = pystray.Icon(
-            "SPTModChecker", self._tray_icon_normal, "SPT Mod Checker", menu)
+            "SPTModChecker", self._tray_icon_normal, "SPTChecker", menu)
         threading.Thread(target=self._tray.run, daemon=True).start()
 
     def _hide_to_tray(self):
@@ -310,8 +396,17 @@ class SPTCheckerApp:
 
     def _do_show(self):
         self._visible = True
+        # Windows reveals the window the instant deiconify() runs, before Tk
+        # has actually painted every widget -- update_idletasks() alone isn't
+        # enough to beat that, since the reveal doesn't wait on paint
+        # completion. Staying fully transparent until a full update() forces
+        # every widget to finish painting means there's nothing left to
+        # progressively fill in once we make it visible.
+        self.root.attributes("-alpha", 0.0)
         self.root.deiconify()
         self.root.state("normal")
+        self.root.update()
+        self.root.attributes("-alpha", 1.0)
         self.root.lift()
         self.root.focus_force()
         self._clear_unread()
@@ -331,7 +426,7 @@ class SPTCheckerApp:
         self._unread_count = 0
         if self._tray:
             self._tray.icon = self._tray_icon_normal
-            self._tray.title = "SPT Mod Checker"
+            self._tray.title = "SPTChecker"
 
     # ── Check logic ────────────────────────────────────────────────────
 
@@ -404,58 +499,49 @@ class SPTCheckerApp:
         except Exception as exc:
             self.root.after(0, self._on_error, str(exc))
 
+    @staticmethod
+    def _send_list_toast(title, lines, links):
+        """Common toast shape for a list of mods: up to 3 detail lines plus
+        an 'and N more…' tail, clicking through to the mod's own page when
+        there's exactly one, or the Forge listing otherwise."""
+        shown = lines[:3]
+        if len(lines) > 3:
+            shown.append(f"and {len(lines) - 3} more…")
+        url = links[0] if len(links) == 1 else FORGE_URL
+        send_toast(title, "\n".join(shown), launch_url=url)
+
     def _send_notifications(self, new_mods, updated_mods):
         if new_mods:
-            lines = []
-            for m in new_mods[:3]:
-                lines.append(f"{m['title']} {m['version']} by {m['author']}")
-            if len(new_mods) > 3:
-                lines.append(f"and {len(new_mods) - 3} more…")
-            url = new_mods[0]["link"] if len(new_mods) == 1 else FORGE_URL
-            send_toast(
+            self._send_list_toast(
                 f"{len(new_mods)} New SPT Mod{'s' if len(new_mods) != 1 else ''}",
-                "\n".join(lines),
-                launch_url=url,
+                [f"{m['title']} {m['version']} by {m['author']}" for m in new_mods],
+                [m["link"] for m in new_mods],
             )
 
         if updated_mods:
-            lines = []
-            for m in updated_mods[:3]:
-                if m.get("prev_version"):
-                    version_str = f"{m['prev_version']} → {m.get('version', '')}"
-                else:
-                    version_str = m.get("version", "")
-                lines.append(f"{m['title']} {version_str} by {m.get('author', '')}")
-            if len(updated_mods) > 3:
-                lines.append(f"and {len(updated_mods) - 3} more…")
-            url = updated_mods[0]["link"] if len(updated_mods) == 1 else FORGE_URL
-            send_toast(
+            def line(m):
+                version_str = (f"{m['prev_version']} → {m.get('version', '')}"
+                               if m.get("prev_version") else m.get("version", ""))
+                return f"{m['title']} {version_str} by {m.get('author', '')}"
+            self._send_list_toast(
                 f"{len(updated_mods)} SPT Mod{'s' if len(updated_mods) != 1 else ''} Updated",
-                "\n".join(lines),
-                launch_url=url,
+                [line(m) for m in updated_mods],
+                [m["link"] for m in updated_mods],
             )
 
     def _apply(self, display_new, display_upd, first_run, n_fresh_new=0, n_fresh_upd=0):
         self._checking = False
         self._btn.configure(state="normal", text="Check Now")
         self._forge_dot.configure(fg=ACCENT_NEW)
-        self._photos.clear()
         now = datetime.now().strftime("%H:%M:%S")
         total = len(self.state.get("mods", {}))
 
-        if display_new:
-            self._fill_column(self._new_frame, display_new)
-        elif first_run:
-            self._set_placeholder(self._new_frame, "Baseline set — monitoring for new mods…")
-        else:
-            self._set_placeholder(self._new_frame, "No new mods detected yet.")
-
-        if display_upd:
-            self._fill_column(self._upd_frame, display_upd)
-        elif first_run:
-            self._set_placeholder(self._upd_frame, "Baseline set — monitoring for updates…")
-        else:
-            self._set_placeholder(self._upd_frame, "No updates detected yet.")
+        self._new_sig = self._render_column(
+            self._new_frame, display_new, self._new_sig, first_run,
+            "Baseline set — monitoring for new mods…", "No new mods detected yet.")
+        self._upd_sig = self._render_column(
+            self._upd_frame, display_upd, self._upd_sig, first_run,
+            "Baseline set — monitoring for updates…", "No updates detected yet.")
 
         if first_run:
             self._lbl_status.configure(text=f"Baseline: {total} mods cataloged at {now}")
@@ -472,10 +558,10 @@ class SPTCheckerApp:
         if self._tray:
             if self._unread_count:
                 self._tray.icon = self._tray_icon_unread
-                self._tray.title = f"SPT Mod Checker — {self._unread_count} unread"
+                self._tray.title = f"SPTChecker — {self._unread_count} unread"
             else:
                 self._tray.icon = self._tray_icon_normal
-                self._tray.title = "SPT Mod Checker — no changes"
+                self._tray.title = "SPTChecker — no changes"
 
         self._schedule_next()
 
@@ -487,15 +573,44 @@ class SPTCheckerApp:
         self._next_check_ts = time.time() + 300
         self._tick_timer()
 
+    def _render_column(self, frame, mods, prev_sig, first_run, baseline_text, empty_text):
+        """Render one column, returning its new content signature. When the
+        signature hasn't changed since last render, the destroy/rebuild of
+        every card is skipped -- rebuilding identical cards on every check
+        cycle caused a visible flash (including the check that fires as soon
+        as you reopen the window after it's been hidden past an interval)."""
+        if not mods:
+            self._set_placeholder(frame, baseline_text if first_run else empty_text)
+            return None
+        sig = self._column_signature(mods)
+        if sig != prev_sig:
+            self._fill_column(frame, mods)
+        else:
+            # _pil is only consumed by a rebuild -- drop it on the skip path
+            # so stale PIL images don't linger on the mod dicts.
+            for m in mods:
+                m.pop("_pil", None)
+        return sig
+
     def _fill_column(self, frame, mods):
+        # PhotoImage refs are kept per-frame: Tk widgets don't hold a Python
+        # reference to their images, so clearing another column's refs while
+        # skipping its rebuild would blank its thumbnails.
+        photos = self._photos[frame] = []
         for w in frame.winfo_children():
             w.destroy()
         for mod in mods:
             photo = ImageTk.PhotoImage(mod.pop("_pil"))
-            self._photos.append(photo)
+            photos.append(photo)
             accent = CATEGORY_COLORS.get(mod.get("category"), CATEGORY_COLOR_DEFAULT)
             card = ModCard(frame, mod, accent, photo)
             card.pack(fill="x", pady=2)
+
+    @staticmethod
+    def _column_signature(mods):
+        """Identifies what's actually rendered in a column."""
+        return tuple((m["link"], m.get("version"), m.get("prev_version"), m.get("is_fresh"))
+                     for m in mods)
 
     # ── Timer ──────────────────────────────────────────────────────────
 
@@ -504,6 +619,14 @@ class SPTCheckerApp:
         self._tick_timer()
 
     def _tick_timer(self):
+        # _do_show calls this directly (in addition to whatever chain is
+        # already pending from before the window was hidden), so cancel any
+        # previously scheduled tick first -- otherwise repeated hide/show
+        # cycles stack up duplicate timer chains that never get cleaned up.
+        if self._timer_after_id is not None:
+            self.root.after_cancel(self._timer_after_id)
+            self._timer_after_id = None
+
         if self._next_check_ts is None:
             return
         left = max(0, int(self._next_check_ts - time.time()))
@@ -513,9 +636,9 @@ class SPTCheckerApp:
         if self._visible:
             m, s = divmod(left, 60)
             self._lbl_timer.configure(text=f"Next check in {m:02d}:{s:02d}")
-            self.root.after(1000, self._tick_timer)
+            self._timer_after_id = self.root.after(1000, self._tick_timer)
         else:
-            self.root.after(left * 1000, self._tick_timer)
+            self._timer_after_id = self.root.after(left * 1000, self._tick_timer)
 
     # ── Run ────────────────────────────────────────────────────────────
 

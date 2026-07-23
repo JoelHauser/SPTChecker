@@ -1,5 +1,7 @@
 import html
 import re
+import threading
+import time
 import xml.etree.ElementTree as ET
 
 import requests
@@ -9,13 +11,41 @@ from .config import API_MOD_URL, API_URL, DC_NS, FEED_URL, FEED_UPDATED_URL
 _MOD_ID_RE = re.compile(r"/mod/(\d+)/")
 
 _session = requests.Session()
-_session.headers["User-Agent"] = "SPTModChecker/2.3.0"
+_session.headers["User-Agent"] = "SPTModChecker/3.0.0"
 
 _API_HEADERS = {"Accept": "application/json"}
+
+# The Forge allows ~300 requests per window, and that budget is shared by
+# every caller in the app -- the periodic feed check and the local-mod scan
+# run on separate threads and can overlap at startup. Pacing and 429 retry
+# live here, in the one place every Forge request passes through, so no
+# call site can forget them.
+_REQUEST_MIN_INTERVAL = 0.25
+_throttle_lock = threading.Lock()
+_last_request_ts = 0.0
 
 
 def get_session():
     return _session
+
+
+def _forge_request(method, url, retries=3, **kw):
+    """Single chokepoint for all Forge requests: enforces a minimum interval
+    between requests app-wide and retries on 429 -- a silently-swallowed 429
+    looks identical to a real "not found" to callers otherwise. Returns the
+    response without raising; callers check status."""
+    global _last_request_ts
+    for attempt in range(retries + 1):
+        with _throttle_lock:
+            wait = _REQUEST_MIN_INTERVAL - (time.monotonic() - _last_request_ts)
+            if wait > 0:
+                time.sleep(wait)
+            _last_request_ts = time.monotonic()
+        resp = _session.request(method, url, **kw)
+        if resp.status_code != 429 or attempt == retries:
+            return resp
+        time.sleep(float(resp.headers.get("Retry-After", 2)))
+    return resp
 
 
 def strip_html(raw):
@@ -38,46 +68,92 @@ def _truncate(text, limit):
     return cut.rstrip() + "…"
 
 
-def _fetch_api_mods(sort="-updated_at"):
-    """Fetch mods from the API with the given sort order."""
+def _parse_api_mod(item):
+    """Map a raw /api/v0/mods item (as returned with include=versions,category) to
+    this app's internal mod dict shape."""
+    versions = item.get("versions", [])
+    latest = versions[0] if versions else {}
+    owner = item.get("owner") or {}
+    category = item.get("category") or {}
+
+    return {
+        "title": item.get("name", ""),
+        "slug": item.get("slug", ""),
+        "link": item.get("detail_url", ""),
+        "guid": item.get("guid", ""),
+        "author": owner.get("name", "Unknown"),
+        "author_id": owner.get("id", ""),
+        "author_since": owner.get("created_at", ""),
+        "version": latest.get("version", ""),
+        "category": category.get("title", ""),
+        "published": item.get("published_at", ""),
+        "updated": latest.get("created_at", item.get("updated_at", "")),
+        "thumb_url": item.get("thumbnail", ""),
+        "description": (item.get("teaser", "") or "")[:300],
+        "full_description": item.get("teaser", "") or "",
+        "changelog": _truncate(latest.get("description", "") or "", CHANGELOG_MAX_CHARS),
+    }
+
+
+def _fetch_mods(params, timeout=15):
+    """Fetch and parse one page of mods from the API; [] on any failure,
+    matching this module's fail-soft convention."""
     try:
-        resp = _session.get(API_URL, headers=_API_HEADERS, params={
-            "include": "versions,category",
-            "sort": sort,
-            "per_page": 50,
-        }, timeout=30)
+        resp = _forge_request("get", API_URL, params={"include": "versions,category", **params},
+                              headers=_API_HEADERS, timeout=timeout)
         resp.raise_for_status()
-
-        mods = []
-        for item in resp.json().get("data", []):
-            versions = item.get("versions", [])
-            latest = versions[0] if versions else {}
-            owner = item.get("owner") or {}
-            category = item.get("category") or {}
-
-            mods.append({
-                "title": item.get("name", ""),
-                "link": item.get("detail_url", ""),
-                "author": owner.get("name", "Unknown"),
-                "author_id": owner.get("id", ""),
-                "author_since": owner.get("created_at", ""),
-                "version": latest.get("version", ""),
-                "category": category.get("title", ""),
-                "published": item.get("published_at", ""),
-                "updated": latest.get("created_at", item.get("updated_at", "")),
-                "thumb_url": item.get("thumbnail", ""),
-                "description": (item.get("teaser", "") or "")[:300],
-                "full_description": item.get("teaser", "") or "",
-                "changelog": _truncate(latest.get("description", "") or "", CHANGELOG_MAX_CHARS),
-            })
-        return mods
+        return [_parse_api_mod(item) for item in resp.json().get("data", [])]
     except Exception:
         return []
 
 
+def _fetch_api_mods(sort="-updated_at"):
+    """Fetch mods from the API with the given sort order."""
+    return _fetch_mods({"sort": sort, "per_page": 50}, timeout=30)
+
+
+def lookup_by_guid(guid):
+    """Exact-match a locally-scanned mod's GUID against the Forge catalog.
+
+    Forge exposes `guid` as a filterable field (confirmed live against
+    filter[guid]=<value>), so this is a single indexed lookup rather than a
+    search -- the primary local-mod matching strategy. Returns None on no
+    match, ambiguous results, or any request failure.
+    """
+    if not guid:
+        return None
+    mods = _fetch_mods({"filter[guid]": guid})
+    if len(mods) != 1 or mods[0].get("guid") != guid:
+        return None
+    return mods[0]
+
+
+def lookup_by_name(name):
+    """Fallback search by name for local mods that yielded no clean GUID match.
+
+    filter[name] does a partial/contains-style match server-side, so callers
+    should rank the results themselves rather than assume the first is right.
+    """
+    return _fetch_mods({"filter[name]": name, "per_page": 20}) if name else []
+
+
+def lookup_by_query(term):
+    """Fuzzy/full-text search, for local mods filter[name] can't find.
+
+    filter[name] only matches a term that's a literal substring of the
+    stored title -- it can't bridge a local mod's internal name (often
+    camelCase/dotted developer shorthand) to a differently-worded Forge
+    listing. `query=` is a separate, undocumented parameter (confirmed live
+    against the API) that does real fuzzy matching instead, at the cost of
+    returning looser candidates -- callers still need to rank results
+    themselves, same as lookup_by_name.
+    """
+    return _fetch_mods({"query": term, "per_page": 20}) if term else []
+
+
 def _parse_rss(url):
     """Parse an RSS feed and return ET root."""
-    resp = _session.get(url, timeout=30)
+    resp = _forge_request("get", url, timeout=30)
     resp.raise_for_status()
     return ET.fromstring(resp.content)
 
@@ -113,7 +189,9 @@ def _extract_mods(root):
 def check_mod_published(url):
     """Return True if the mod page is still reachable (not unpublished)."""
     try:
-        resp = _session.head(url, timeout=10, allow_redirects=True)
+        resp = _forge_request("head", url, timeout=10, allow_redirects=True)
+        if resp.status_code == 429:
+            return True  # rate-limited, not unpublished -- keep it displayed
         return resp.status_code == 200
     except Exception:
         return True
@@ -131,7 +209,8 @@ def fetch_author_id(mod_link):
     if not m:
         return None
     try:
-        resp = _session.get(f"{API_MOD_URL}/{m.group(1)}", headers=_API_HEADERS, timeout=15)
+        resp = _forge_request("get", f"{API_MOD_URL}/{m.group(1)}",
+                              headers=_API_HEADERS, timeout=15)
         resp.raise_for_status()
         owner = resp.json().get("data", {}).get("owner") or {}
         return owner.get("id")
