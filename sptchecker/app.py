@@ -101,8 +101,9 @@ class SPTCheckerApp:
         self.root.protocol("WM_DELETE_WINDOW", self._hide_to_tray)
 
         self.root.after(400, self._check_now)
-        if self.state.get("local_scan_enabled") and self.state.get("spt_install_path"):
-            self.root.after(800, self._scan_local_now)
+        # Local mod scanning never runs on its own, even with the feature
+        # enabled and a folder already set -- only an explicit click on
+        # Scan Now (in _show_local_scan) starts one.
 
     # ── Window geometry ─────────────────────────────────────────────────
 
