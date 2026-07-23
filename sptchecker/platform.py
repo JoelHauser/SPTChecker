@@ -134,7 +134,7 @@ _TOAST_ICON = str((ASSETS_DIR / "icon_256.png").resolve())
 def send_toast(title, body, launch_url=None):
     try:
         toast = Notification(
-            app_id="SPT Mod Checker",
+            app_id="SPTChecker",
             title=title,
             msg=body,
             duration="long",

@@ -65,7 +65,7 @@ class SPTCheckerApp:
 
         set_dpi_aware()
         self.root = tk.Tk()
-        self.root.title("SPT Mod Checker v3.0.0")
+        self.root.title("SPTChecker")
         self.root.configure(bg=BG)
         self.root.geometry(self._load_geometry())
         self.root.minsize(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
@@ -383,7 +383,7 @@ class SPTCheckerApp:
             pystray.MenuItem("Quit", self._tray_quit),
         )
         self._tray = pystray.Icon(
-            "SPTModChecker", self._tray_icon_normal, "SPT Mod Checker", menu)
+            "SPTModChecker", self._tray_icon_normal, "SPTChecker", menu)
         threading.Thread(target=self._tray.run, daemon=True).start()
 
     def _hide_to_tray(self):
@@ -426,7 +426,7 @@ class SPTCheckerApp:
         self._unread_count = 0
         if self._tray:
             self._tray.icon = self._tray_icon_normal
-            self._tray.title = "SPT Mod Checker"
+            self._tray.title = "SPTChecker"
 
     # ── Check logic ────────────────────────────────────────────────────
 
@@ -558,10 +558,10 @@ class SPTCheckerApp:
         if self._tray:
             if self._unread_count:
                 self._tray.icon = self._tray_icon_unread
-                self._tray.title = f"SPT Mod Checker — {self._unread_count} unread"
+                self._tray.title = f"SPTChecker — {self._unread_count} unread"
             else:
                 self._tray.icon = self._tray_icon_normal
-                self._tray.title = "SPT Mod Checker — no changes"
+                self._tray.title = "SPTChecker — no changes"
 
         self._schedule_next()
 

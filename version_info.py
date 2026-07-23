@@ -16,11 +16,11 @@ VSVersionInfo(
                     '040904B0',
                     [
                         StringStruct('CompanyName', 'MyButtHasARash'),
-                        StringStruct('FileDescription', 'SPT Mod Checker - Monitors SPT Forge for new and updated mods'),
+                        StringStruct('FileDescription', 'SPTChecker - Monitors SPT Forge for new and updated mods'),
                         StringStruct('FileVersion', '3.0.0.0'),
                         StringStruct('InternalName', 'SPTModChecker'),
                         StringStruct('OriginalFilename', 'SPTModChecker_v3.0.0.exe'),
-                        StringStruct('ProductName', 'SPT Mod Checker'),
+                        StringStruct('ProductName', 'SPTChecker'),
                         StringStruct('ProductVersion', '3.0.0.0'),
                     ],
                 )

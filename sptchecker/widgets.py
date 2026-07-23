@@ -871,7 +871,7 @@ class LocalScanSettingsWindow(FramelessPopup):
                 self._add_plain_row(f"{name}  —  v{r['current_version']}", link=r["forge"]["link"])
 
         if unmatched:
-            self._add_section_header("Not Found on Forge", color=TEXT_DIM)
+            self._add_section_header("Not Found on Forge", color="#e53935")
             for r in unmatched:
                 name = r["local"].get("name") or "(unknown)"
                 self._add_plain_row(f"{name}  —  v{r['local'].get('version') or '?'}")

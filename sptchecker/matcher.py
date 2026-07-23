@@ -203,6 +203,53 @@ def match_one(local_mod):
     }
 
 
+def _merge_group(group):
+    """Combine several scan results that all resolved to the same Forge mod
+    into one. forge is identical across the group by construction (that's
+    the grouping key); only the local side differs.
+
+    The common case is that every component is at the same installed
+    version -- show that one version, same as an unmerged entry would. It's
+    also possible for a mod's client and server halves to drift out of sync
+    with each other (one updated, one not), in which case an unlabeled
+    "1.4.0 / 1.5.0" is ambiguous about which is which -- label each by its
+    source instead.
+    """
+    distinct = list(dict.fromkeys(r["current_version"] for r in group if r["current_version"]))
+    if len(distinct) > 1:
+        current_version = ", ".join(
+            f"{r['local'].get('source', '?')} {r['current_version']}"
+            for r in group if r["current_version"]
+        )
+    else:
+        current_version = distinct[0] if distinct else None
+    return {
+        **group[0],
+        "current_version": current_version,
+        "update_available": any(r["update_available"] for r in group),
+    }
+
+
+def merge_duplicate_matches(results):
+    """A single logical mod is sometimes split across multiple installed
+    files that each declare their own GUID -- a BepInEx client plugin and a
+    separate SPT server-side DLL are scanned and matched independently, but
+    if they both resolve to the same Forge listing they're one mod to the
+    user, not two separate "update available" entries."""
+    groups, order = {}, []
+    for r in results:
+        # Unmatched entries have no forge.link to group by -- key each on its
+        # own identity so they never merge with one another.
+        key = r["forge"]["link"] if r["forge"] else id(r)
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(r)
+
+    return [group[0] if len(group) == 1 else _merge_group(group)
+            for group in (groups[key] for key in order)]
+
+
 def match_local_mods(local_mods, on_progress=None):
     """Match every locally-scanned mod against the Forge. Request pacing and
     rate-limit retry live in feed.py's request layer, not here. on_progress
@@ -215,4 +262,4 @@ def match_local_mods(local_mods, on_progress=None):
         results.append(match_one(mod))
         if on_progress:
             on_progress(i + 1, total)
-    return results
+    return merge_duplicate_matches(results)

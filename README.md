@@ -1,4 +1,4 @@
-## SPT Mod Checker
+## SPTChecker
 
 A lightweight Windows desktop app that monitors the [SPT Forge](https://forge.sp-tarkov.com/mods) for new and updated mods in real time.
 
@@ -8,7 +8,7 @@ A lightweight Windows desktop app that monitors the [SPT Forge](https://forge.sp
 
 ### What it does
 
-SPT Mod Checker runs quietly in your system tray and checks the Forge every 5 minutes for changes. When it finds something, it sends a Windows toast notification and updates the UI — no need to manually browse the Forge to stay up to date.
+SPTChecker runs quietly in your system tray and checks the Forge every 5 minutes for changes. When it finds something, it sends a Windows toast notification and updates the UI — no need to manually browse the Forge to stay up to date.
 
 It can also do the reverse: point it at your SPT install folder and it'll scan your actually-installed mods and tell you which ones have updates waiting on the Forge (see **Local mod scanning** below) — entirely opt-in, off by default.
 
