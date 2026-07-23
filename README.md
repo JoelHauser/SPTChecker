@@ -47,16 +47,19 @@ It can also do the reverse: point it at your SPT install folder and it'll scan y
 
 ### Local mod scanning (opt-in)
 
-Click **Local Mods** to check your own installed mods against the Forge — entirely optional and off by default:
+Click **Local Mods** to check your own installed mods against the Forge — entirely optional and off by default. This is a first iteration of the feature; if you run into anything odd, please report it.
 
 1. Point it at your SPT install folder (validated automatically — it checks for `BepInEx/plugins` or `SPT/user/mods`).
 2. Click **Scan Now**. Rather than guessing a mod's identity from its filename or source code shape, the app reads each mod's *real* declared metadata via actual .NET reflection, so it works no matter how a mod author's code is structured. A progress bar tracks each mod as it's checked against the Forge.
-3. Each mod is matched against the Forge (exact ID lookup first, falling back to a smarter name search — handling camelCase/dotted internal names, author-prefixed names, and a full-text fallback search — then fuzzy ranking) and grouped into:
-   - **Updates Available** — shown as full mod cards (thumbnail, version diff, changelog, right-click menu — same as the main feed), with an **Open All** button to launch every one of those mod pages in your browser at once
-   - **Up to Date** — a simple clickable list linking to each mod's Forge page
-   - **Not Found on Forge** — mods that couldn't be matched
-4. A toast notification fires if any installed mods have updates available.
-5. Your folder path and last scan results are remembered across restarts. If enabled, it automatically rescans once when the app launches — it does **not** rescan on the regular 5-minute timer, only on startup or when you manually click Scan Now.
+3. Each mod is matched against the Forge (exact ID lookup first, falling back to a smarter name search — handling camelCase/dotted internal names, author-prefixed names, and a full-text fallback search — then fuzzy ranking) and grouped into color-coded sections:
+   - **Updates Available** (orange) — shown as full mod cards (thumbnail, version diff, changelog, right-click menu — same as the main feed), with an **Open All** button to launch every one of those mod pages in your browser at once
+   - **Up to Date** (green) — a simple clickable list linking to each mod's Forge page
+   - **Not Found on Forge** (red) — mods that couldn't be matched (see below for why)
+4. Mods that ship both a client-side plugin and a separate server-side file (common for larger mods) are recognized as one logical mod and shown as a single result, not two duplicate entries.
+5. A toast notification fires if any installed mods have updates available.
+6. Your folder path and last scan results are remembered across restarts and shown again next time you open **Local Mods** — but a scan only ever runs when you click **Scan Now**. It never runs automatically, on startup or otherwise.
+
+**Why a mod might show up as "Not Found on Forge":** its internal name may not closely resemble its actual Forge listing title, it may be part of a bundled mod pack rather than listed individually, it may have been removed or renamed on the Forge, or it may be a core SPT/framework component rather than an actual mod (filtered out on purpose). SPTChecker would rather report "not found" than risk flagging the wrong mod as needing an update.
 
 ---
 
