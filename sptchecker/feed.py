@@ -234,8 +234,19 @@ def fetch_feeds():
         field: {link: m[field] for link, m in all_api.items() if m.get(field)}
         for field in enrich_fields
     }
+    # RSS's pubDate reflects when the listing was *created* (often drafted well
+    # before it actually goes live), not when it was published -- confirmed live
+    # against the API's published_at, which is the true publish timestamp. That
+    # skew is what makes the daily-activity graph undercount "today" and only
+    # catch up once the date rolls over. The API value always wins when
+    # available; RSS's pubDate is only a fallback for mods outside the API's
+    # fetched window.
+    published_lookup = {link: m["published"] for link, m in all_api.items() if m.get("published")}
 
     def _enrich(mod):
+        api_published = published_lookup.get(mod["link"])
+        if api_published:
+            mod["published"] = api_published
         for field in enrich_fields:
             mod[field] = mod.get(field) or lookups[field].get(mod["link"], "")
 
