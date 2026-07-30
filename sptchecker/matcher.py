@@ -21,6 +21,14 @@ def _parse_version(v):
     return tuple(int(p) for p in parts) if parts else None
 
 
+def _pad_versions(a, b):
+    """Zero-pad the shorter tuple so (1, 0, 2) and (1, 0, 2, 0) -- the same
+    version, just written with a different number of segments -- compare as
+    equal instead of the longer one looking "newer" by tuple length alone."""
+    n = max(len(a), len(b))
+    return a + (0,) * (n - len(a)), b + (0,) * (n - len(b))
+
+
 def _is_newer(available, current):
     """True only if the Forge version is actually numerically greater than
     the installed one -- a matched mod's Forge listing can be an older
@@ -34,7 +42,18 @@ def _is_newer(available, current):
     a, c = _parse_version(available), _parse_version(current)
     if a is None or c is None:
         return False
+    a, c = _pad_versions(a, c)
     return a > c
+
+
+def _versions_equal(v1, v2):
+    """Numeric equality, so '1.0.2' and '1.0.2.0' are recognized as the same
+    version instead of looking like a client/server version drift."""
+    a, c = _parse_version(v1), _parse_version(v2)
+    if a is None or c is None:
+        return v1 == v2
+    a, c = _pad_versions(a, c)
+    return a == c
 
 
 _CLIENT_SERVER_SUFFIX_RE = re.compile(r"[\s._-]*(client|server)$", re.IGNORECASE)
@@ -213,16 +232,20 @@ def _merge_group(group):
     also possible for a mod's client and server halves to drift out of sync
     with each other (one updated, one not), in which case an unlabeled
     "1.4.0 / 1.5.0" is ambiguous about which is which -- label each by its
-    source instead.
+    source instead. Versions are compared numerically (via _versions_equal),
+    not as raw strings -- otherwise '1.0.2' and '1.0.2.0' (the same version,
+    just with a trailing zero segment) would look like a drift that isn't
+    real.
     """
-    distinct = list(dict.fromkeys(r["current_version"] for r in group if r["current_version"]))
-    if len(distinct) > 1:
+    versions = [r["current_version"] for r in group if r["current_version"]]
+    first = versions[0] if versions else None
+    if versions and any(not _versions_equal(v, first) for v in versions):
         current_version = ", ".join(
             f"{r['local'].get('source', '?')} {r['current_version']}"
             for r in group if r["current_version"]
         )
     else:
-        current_version = distinct[0] if distinct else None
+        current_version = first
     return {
         **group[0],
         "current_version": current_version,
