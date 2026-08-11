@@ -2,7 +2,7 @@ import difflib
 import re
 
 from .config import FUZZY_MATCH_THRESHOLD
-from .feed import lookup_by_guid, lookup_by_name, lookup_by_query
+from .feed import lookup_by_guid, lookup_by_name, lookup_by_query, lookup_updates
 
 
 def _normalize_name(name):
@@ -131,7 +131,7 @@ def _search_by_name(name, guid=None):
     return [], None
 
 
-def _rank_candidates(candidates, name, author=None):
+def _rank_candidates(candidates, name, author=None, original_name=None):
     """Cascade: exact normalized name/slug -> author+name -> fuzzy similarity
     above threshold. Returns (forge_mod, match_method), or (None, None) if
     nothing is confident enough -- an unmatched mod is reported as
@@ -141,13 +141,26 @@ def _rank_candidates(candidates, name, author=None):
     against -- the slug is already normalized (lowercase, hyphenated, no
     punctuation), so it often lines up with a camelCase/dotted local name
     far better than the display title does, so the ranking takes the max
-    of a name-score and a slug-score."""
+    of a name-score and a slug-score.
+
+    original_name, if given, is the mod's real unstripped name -- name may
+    already be a suffix-stripped/author-prefix-stripped/camelCase-split
+    search-term variant (see _search_terms), and the fuzzy tier specifically
+    re-checks against the original too. Confirmed live: a local
+    'Realism-CommonLib' had 'Realism-' wrongly stripped as if it were an
+    author prefix, leaving the dangerously generic term 'CommonLib', which
+    then fuzzy-matched an unrelated 'WTT - CommonLib' listing at a
+    comfortable 0.857 -- comparing against the *original* name instead
+    scores only 0.643, correctly well below threshold. name_exact and
+    author_name are unaffected since they aren't fooled by an over-stripped
+    term the same way -- this check only guards the last-resort tier."""
     if not candidates:
         return None, None
     target_name = _normalize_name(name)
     if not target_name:
         return None, None
     target_author = _normalize_name(author)
+    original_name_n = _normalize_name(original_name) if original_name else target_name
 
     normed = [(c, _normalize_name(c.get("title")), _normalize_name(c.get("slug")))
               for c in candidates]
@@ -165,16 +178,21 @@ def _rank_candidates(candidates, name, author=None):
     # difflib caches preprocessing for the second sequence, so keep the
     # shared target there and swap only the candidate side per comparison.
     matcher = difflib.SequenceMatcher(None, "", target_name)
-    best, best_ratio = None, 0.0
+    best, best_ratio, best_title_n, best_slug_n = None, 0.0, "", ""
     for c, title_n, slug_n in normed:
         matcher.set_seq1(title_n)
         ratio = matcher.ratio()
         matcher.set_seq1(slug_n)
         ratio = max(ratio, matcher.ratio())
         if ratio > best_ratio:
-            best, best_ratio = c, ratio
+            best, best_ratio, best_title_n, best_slug_n = c, ratio, title_n, slug_n
     if best and best_ratio >= FUZZY_MATCH_THRESHOLD:
-        return best, "fuzzy"
+        orig_matcher = difflib.SequenceMatcher(None, best_title_n, original_name_n)
+        orig_ratio = orig_matcher.ratio()
+        orig_matcher.set_seq1(best_slug_n)
+        orig_ratio = max(orig_ratio, orig_matcher.ratio())
+        if orig_ratio >= FUZZY_MATCH_THRESHOLD:
+            return best, "fuzzy"
     return None, None
 
 
@@ -189,7 +207,8 @@ def match_one(local_mod):
     if not forge:
         candidates, matched_term = _search_by_name(local_mod.get("name"), guid)
         forge, match_method = _rank_candidates(
-            candidates, matched_term, local_mod.get("author"))
+            candidates, matched_term, local_mod.get("author"),
+            original_name=local_mod.get("name"))
 
     if not forge:
         # filter[name] only matches a literal substring of the stored title,
@@ -253,6 +272,61 @@ def _merge_group(group):
     }
 
 
+def _apply_authoritative_updates(results, spt_version):
+    """Override each match's update_available/available_version with
+    Forge's own mods/updates verdict where one exists. Confirmed live
+    against a real install: a local numeric version comparison alone
+    produces false "update available" flags that Forge's own version
+    history doesn't back up, and can't know whether a newer version is
+    actually compatible with the user's installed SPT build or blocked by
+    another mod's dependency constraint. Looked up by the *Forge-matched*
+    guid, not the mod's own locally-declared one -- the two can legitimately
+    differ (e.g. a mod re-registered under a new author/guid on Forge while
+    keeping its old local plugin GUID), and Forge's own guid is what its API
+    actually recognizes.
+
+    A pair Forge doesn't recognize at all (identifier unknown, or this exact
+    installed version was never one it tracked) is left untouched -- no
+    verdict isn't the same as "up to date", so those results keep whatever
+    match_one already computed locally as a fallback rather than being
+    silently cleared. Keyed by (guid, installed version) together, not guid
+    alone -- the same guid can appear twice with different local versions
+    (e.g. a stale duplicate DLL left behind after an update), and keying on
+    guid alone would let one component's verdict overwrite the other's.
+    """
+    if not spt_version:
+        return
+    by_key = {}
+    pairs = []
+    for r in results:
+        forge = r.get("forge")
+        guid = forge.get("guid") if forge else None
+        version = r.get("current_version")
+        if guid and version and _parse_version(version):
+            pairs.append((guid, version))
+            by_key.setdefault((guid.lower(), version), []).append(r)
+    if not pairs:
+        return
+
+    data = lookup_updates(pairs, spt_version)
+
+    for entry in data["updates"]:
+        key = (entry["current_version"]["guid"].lower(), entry["current_version"]["version"])
+        for r in by_key.get(key, []):
+            r["update_available"] = True
+            r["available_version"] = entry["recommended_version"]["version"]
+
+    for entry in data["blocked_updates"]:
+        key = (entry["current_version"]["guid"].lower(), entry["current_version"]["version"])
+        for r in by_key.get(key, []):
+            r["update_available"] = False
+
+    for entry in data["up_to_date"] + data["incompatible_with_spt"]:
+        key = (entry["guid"].lower(), entry["version"])
+        for r in by_key.get(key, []):
+            r["update_available"] = False
+
+
 def merge_duplicate_matches(results):
     """A single logical mod is sometimes split across multiple installed
     files that each declare their own GUID -- a BepInEx client plugin and a
@@ -273,16 +347,22 @@ def merge_duplicate_matches(results):
             for group in (groups[key] for key in order)]
 
 
-def match_local_mods(local_mods, on_progress=None):
+def match_local_mods(local_mods, spt_version=None, on_progress=None):
     """Match every locally-scanned mod against the Forge. Request pacing and
     rate-limit retry live in feed.py's request layer, not here. on_progress
     (done, total), if given, is called after each mod -- this is the slow
     part of a scan (per-mod network lookups), so it's the meaningful thing
-    to report progress against; the file-scan phase before it is fast."""
+    to report progress against; the file-scan phase before it is fast.
+    spt_version, if known, is passed straight through to Forge's own
+    mods/updates endpoint to double-check each match's update status --
+    skipped entirely (falling back to the plain local version comparison
+    from match_one) when it couldn't be detected, e.g. a client-only
+    install with no SPT.Server.exe."""
     results = []
     total = len(local_mods)
     for i, mod in enumerate(local_mods):
         results.append(match_one(mod))
         if on_progress:
             on_progress(i + 1, total)
+    _apply_authoritative_updates(results, spt_version)
     return merge_duplicate_matches(results)

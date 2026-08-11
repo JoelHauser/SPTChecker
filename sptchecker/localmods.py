@@ -1,13 +1,58 @@
+import ctypes
 import json
 import subprocess
+from ctypes import wintypes
 from pathlib import Path
 
 from .config import (
     BEPINEX_PLUGINS_SUBPATH, CORE_SPT_NAME_PREFIX, LEGACY_SERVER_MODS_SUBPATH,
     MODREADER_EXE, MODREADER_TIMEOUT_SECONDS, SERVER_MODS_SUBPATH,
+    SPT_SERVER_EXE_SUBPATH,
 )
 
 _CREATE_NO_WINDOW = 0x08000000  # avoid a console flash launching a console-mode exe from the GUI app
+
+
+class _VS_FIXEDFILEINFO(ctypes.Structure):
+    _fields_ = [
+        ("dwSignature", wintypes.DWORD), ("dwStrucVersion", wintypes.DWORD),
+        ("dwFileVersionMS", wintypes.DWORD), ("dwFileVersionLS", wintypes.DWORD),
+        ("dwProductVersionMS", wintypes.DWORD), ("dwProductVersionLS", wintypes.DWORD),
+        ("dwFileFlagsMask", wintypes.DWORD), ("dwFileFlags", wintypes.DWORD),
+        ("dwFileOS", wintypes.DWORD), ("dwFileType", wintypes.DWORD),
+        ("dwFileSubtype", wintypes.DWORD), ("dwFileDateMS", wintypes.DWORD),
+        ("dwFileDateLS", wintypes.DWORD),
+    ]
+
+
+def detect_spt_version(spt_root):
+    """Read the installed SPT server's version straight from SPT.Server.exe's
+    own Windows version resource -- there's no plain-text config file that
+    records it, but the exe's file version is always accurate (it's set at
+    build time). Needed to query Forge's mods/updates endpoint, which
+    requires the target SPT version to correctly judge compatibility.
+    Returns None (never raises) if the exe is missing or unreadable -- e.g. a
+    client-only install with no server component."""
+    exe_path = str(Path(spt_root) / SPT_SERVER_EXE_SUBPATH)
+    try:
+        version_dll = ctypes.WinDLL("version.dll")
+        size = version_dll.GetFileVersionInfoSizeW(exe_path, None)
+        if not size:
+            return None
+        buf = ctypes.create_string_buffer(size)
+        if not version_dll.GetFileVersionInfoW(exe_path, 0, size, buf):
+            return None
+        value = ctypes.c_void_p()
+        value_len = wintypes.UINT()
+        if not version_dll.VerQueryValueW(buf, "\\", ctypes.byref(value), ctypes.byref(value_len)):
+            return None
+        info = ctypes.cast(value, ctypes.POINTER(_VS_FIXEDFILEINFO)).contents
+        major = info.dwFileVersionMS >> 16
+        minor = info.dwFileVersionMS & 0xFFFF
+        build = info.dwFileVersionLS >> 16
+        return f"{major}.{minor}.{build}"
+    except OSError:
+        return None
 
 
 def _run_modreader(spt_root, client_dlls, server_dlls):

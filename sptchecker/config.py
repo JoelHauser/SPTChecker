@@ -16,13 +16,29 @@ CACHE_DIR = DATA_DIR / "thumb_cache"
 
 # ── Feed ───────────────────────────────────────────────────────────────
 
-FEED_URL = "https://forge.sp-tarkov.com/mods/rss"
-FEED_UPDATED_URL = "https://forge.sp-tarkov.com/mods/rss?sort=updated"
-API_URL = "https://forge.sp-tarkov.com/api/v0/mods"
-API_MOD_URL = "https://forge.sp-tarkov.com/api/v0/mod"
-FORGE_URL = "https://forge.sp-tarkov.com/mods"
-FORGE_USER_URL = "https://forge.sp-tarkov.com/user"
+FEED_URL = "https://sp-mod.com/mods/rss"
+FEED_UPDATED_URL = "https://sp-mod.com/mods/rss?sort=updated"
+API_URL = "https://sp-mod.com/api/v0/mods"
+API_MOD_URL = "https://sp-mod.com/api/v0/mod"
+API_MODS_UPDATES_URL = "https://sp-mod.com/api/v0/mods/updates"
+FORGE_URL = "https://sp-mod.com/mods"
+FORGE_USER_URL = "https://sp-mod.com/user"
 DC_NS = "http://purl.org/dc/elements/1.1/"
+
+# The Forge moved to sp-mod.com under new management; the old hosts are fully
+# down (HTTP 521), not redirecting, so nothing resolves without this. Mod
+# ids and slugs carried over unchanged -- verified live, old
+# /mod/<id>/<slug> paths resolve 1:1 on the new domain -- so rewriting just
+# the host preserves each mod's identity. That matters because a mod's link
+# is its dedupe key in saved state: without this rewrite every already-known
+# mod would look brand new on the first check after updating and fire a
+# notification storm.
+HOST_MIGRATIONS = {
+    "forge.sp-tarkov.com": "sp-mod.com",
+    "forge-static.sp-tarkov.com": "files.sp-mod.com",
+}
+# State fields holding a URL that needs the rewrite above.
+MIGRATED_URL_FIELDS = ("link", "thumb_url")
 
 # ── Behaviour ──────────────────────────────────────────────────────────
 
@@ -57,6 +73,17 @@ CORE_SPT_NAME_PREFIX = "spt."
 # into assets/, not built by PyInstaller itself.
 MODREADER_EXE = ASSETS_DIR / "ModReader.exe"
 MODREADER_TIMEOUT_SECONDS = 120
+# Used to read the installed SPT server version straight from the exe's own
+# Windows version resource -- the only reliable source, since it's not
+# recorded in any plain-text config file on disk.
+SPT_SERVER_EXE_SUBPATH = "SPT/SPT.Server.exe"
+# GET /api/v0/mods/updates takes a comma-separated `mods` list with no
+# documented cap -- chunk defensively so a large install never risks the
+# request line getting rejected/truncated by a proxy or server limit.
+MODS_UPDATES_CHUNK_SIZE = 40
+# Batched published-status lookups are bounded by the API's documented
+# per_page maximum of 50.
+PUBLISHED_CHUNK_SIZE = 50
 
 # ── Window ─────────────────────────────────────────────────────────────
 

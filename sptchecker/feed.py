@@ -6,12 +6,15 @@ import xml.etree.ElementTree as ET
 
 import requests
 
-from .config import API_MOD_URL, API_URL, DC_NS, FEED_URL, FEED_UPDATED_URL
+from .config import (
+    API_MOD_URL, API_MODS_UPDATES_URL, API_URL, DC_NS, FEED_URL, FEED_UPDATED_URL,
+    MODS_UPDATES_CHUNK_SIZE, PUBLISHED_CHUNK_SIZE as _PUBLISHED_CHUNK_SIZE,
+)
 
 _MOD_ID_RE = re.compile(r"/mod/(\d+)/")
 
 _session = requests.Session()
-_session.headers["User-Agent"] = "SPTModChecker/3.1.1"
+_session.headers["User-Agent"] = "SPTModChecker/3.3.0"
 
 _API_HEADERS = {"Accept": "application/json"}
 
@@ -151,6 +154,45 @@ def lookup_by_query(term):
     return _fetch_mods({"query": term, "per_page": 20}) if term else []
 
 
+def lookup_updates(pairs, spt_version):
+    """Batch-check locally-installed mods against Forge's own authoritative
+    update logic: given (guid, installed_version) pairs and the user's
+    actual installed SPT version, Forge judges whether a newer version
+    exists, whether it's actually compatible with that SPT version, and
+    whether installing it would violate another mod's dependency
+    constraint -- none of which a local version-string comparison can know.
+    Confirmed live: this catches false "update available" flags that a
+    local numeric-newer check alone lets through -- Forge treats a matched
+    mod's version history as the source of truth, not just "is the number
+    bigger".
+
+    Chunked since the API's mods= list has no documented length cap, and
+    merged into one dict of the four Forge result buckets: updates,
+    blocked_updates, up_to_date, incompatible_with_spt. A chunk that fails
+    (network hiccup, one bad identifier) is skipped rather than failing the
+    whole batch -- callers should treat a pair absent from every bucket as
+    "no authoritative answer" and keep their own fallback, not as "up to
+    date".
+    """
+    merged = {"updates": [], "blocked_updates": [], "up_to_date": [], "incompatible_with_spt": []}
+    if not pairs or not spt_version:
+        return merged
+    for i in range(0, len(pairs), MODS_UPDATES_CHUNK_SIZE):
+        chunk = pairs[i:i + MODS_UPDATES_CHUNK_SIZE]
+        mods_param = ",".join(f"{guid}:{version}" for guid, version in chunk)
+        try:
+            resp = _forge_request("get", API_MODS_UPDATES_URL,
+                                  params={"mods": mods_param, "spt_version": spt_version},
+                                  headers=_API_HEADERS, timeout=20)
+            resp.raise_for_status()
+            data = resp.json().get("data", {})
+        except Exception:
+            continue
+        for key in merged:
+            merged[key].extend(data.get(key, []))
+    return merged
+
+
 def _parse_rss(url):
     """Parse an RSS feed and return ET root."""
     resp = _forge_request("get", url, timeout=30)
@@ -186,15 +228,55 @@ def _extract_mods(root):
     return mods
 
 
-def check_mod_published(url):
-    """Return True if the mod page is still reachable (not unpublished)."""
-    try:
-        resp = _forge_request("head", url, timeout=10, allow_redirects=True)
-        if resp.status_code == 429:
-            return True  # rate-limited, not unpublished -- keep it displayed
-        return resp.status_code == 200
-    except Exception:
-        return True
+def unpublished_links(links):
+    """Of these mod links, which are no longer published?
+
+    Replaces what used to be one HEAD request per mod against its rendered
+    HTML page. sp-mod.com serves API responses roughly 30x faster than mod
+    pages (measured: ~0.02s vs ~0.58s each), and a display refresh checks 14
+    mods, so the old approach cost ~8s per check and dominated the whole
+    cycle. One indexed filter[id] lookup answers for all of them at once.
+
+    Returns the set of links that are definitively gone -- everything else
+    stays displayed. Every uncertain path deliberately reports "nothing is
+    unpublished" rather than guessing: these mods came out of the live feed
+    moments earlier, so a mod vanishing is the rare case and a request
+    failure is the likely one. Wrongly hiding a real mod is far worse than
+    briefly showing one that just got pulled.
+    """
+    by_id = {}
+    for link in links:
+        m = _MOD_ID_RE.search(link)
+        # No parseable id -- can't ask about it, so leave it displayed.
+        if m:
+            by_id.setdefault(m.group(1), []).append(link)
+    if not by_id:
+        return set()
+
+    found = set()
+    ids = list(by_id)
+    for i in range(0, len(ids), _PUBLISHED_CHUNK_SIZE):
+        chunk = ids[i:i + _PUBLISHED_CHUNK_SIZE]
+        try:
+            resp = _forge_request("get", API_URL, headers=_API_HEADERS, timeout=20,
+                                  params={"filter[id]": ",".join(chunk),
+                                          "fields": "id",
+                                          "per_page": _PUBLISHED_CHUNK_SIZE})
+            resp.raise_for_status()
+            data = resp.json().get("data", [])
+        except Exception:
+            return set()
+        # Asking about several live-feed mods and being told none of them
+        # exist is far more likely an API contract change than a simultaneous
+        # mass unpublish -- treat it as inconclusive rather than blanking the
+        # display. A single-id chunk is still trusted, so real one-off
+        # unpublishes are still caught.
+        if not data and len(chunk) > 1:
+            return set()
+        found.update(str(item.get("id")) for item in data)
+
+    return {link for mod_id, group in by_id.items() if mod_id not in found
+            for link in group}
 
 
 def fetch_author_id(mod_link):
