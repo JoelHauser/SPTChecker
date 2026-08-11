@@ -15,8 +15,8 @@ from .config import (
     SEPARATOR, STATE_FIELDS, STATUS_BG, TEXT, TEXT_BRIGHT, TEXT_DIM,
     WINDOW_DEFAULT_GEOMETRY, WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH,
 )
-from .feed import check_mod_published, fetch_feeds
-from .localmods import scan_installed_mods
+from .feed import fetch_feeds, unpublished_links
+from .localmods import detect_spt_version, scan_installed_mods
 from .matcher import match_local_mods
 from .platform import (
     badge_icon, disable_show_animation, is_startup_enabled, load_app_icon,
@@ -330,6 +330,7 @@ class SPTCheckerApp:
             local_mods = scan_installed_mods(spt_path)
             results = match_local_mods(
                 local_mods,
+                spt_version=detect_spt_version(spt_path),
                 on_progress=lambda done, total: self.root.after(
                     0, self._update_scan_progress, done, total),
             )
@@ -461,8 +462,11 @@ class SPTCheckerApp:
             display_new = newest[:MAX_PER_CATEGORY]
             display_upd = updated[:MAX_PER_CATEGORY]
 
-            display_new = [m for m in display_new if check_mod_published(m["link"])]
-            display_upd = [m for m in display_upd if check_mod_published(m["link"])]
+            # One batched lookup covering both columns, rather than a request
+            # per mod -- see unpublished_links().
+            gone = unpublished_links([m["link"] for m in display_new + display_upd])
+            display_new = [m for m in display_new if m["link"] not in gone]
+            display_upd = [m for m in display_upd if m["link"] not in gone]
 
             for mod in display_upd:
                 old_version = prev_versions.get(mod["link"], "")

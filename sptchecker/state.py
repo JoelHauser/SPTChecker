@@ -8,16 +8,78 @@ from io import BytesIO
 from PIL import Image, ImageDraw
 
 from .config import (
-    CACHE_DIR, CARD_BG, DATA_DIR, SEPARATOR, STATE_FILE, TEXT_DIM,
-    THUMB_MAX_AGE_DAYS, THUMB_SIZE, TOP_STATS_WINDOW_DAYS, TREND_WINDOW_DAYS,
+    CACHE_DIR, CARD_BG, DATA_DIR, HOST_MIGRATIONS, MIGRATED_URL_FIELDS,
+    SEPARATOR, STATE_FILE, TEXT_DIM, THUMB_MAX_AGE_DAYS, THUMB_SIZE,
+    TOP_STATS_WINDOW_DAYS, TREND_WINDOW_DAYS,
 )
 from .feed import get_session
 from .utils import parse_dt
 
 
+def _migrated_url(url):
+    """Swap a dead old-Forge host for its sp-mod.com replacement, leaving the
+    rest of the URL (and any non-Forge URL) untouched."""
+    if not isinstance(url, str):
+        return url
+    for old, new in HOST_MIGRATIONS.items():
+        prefix = f"//{old}/"
+        if prefix in url:
+            return url.replace(prefix, f"//{new}/", 1)
+    return url
+
+
+def _migrate_urls(obj):
+    """Rewrite every known URL-bearing field in a nested state structure,
+    in place. Returns True if anything changed. Deliberately keyed on field
+    name rather than a blind whole-file string replace: free-text fields
+    like changelogs carry author-written links, and silently rewriting
+    someone's prose is not this function's job."""
+    changed = False
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if key in MIGRATED_URL_FIELDS:
+                migrated = _migrated_url(value)
+                if migrated != value:
+                    obj[key] = migrated
+                    changed = True
+            else:
+                changed |= _migrate_urls(value)
+    elif isinstance(obj, list):
+        for item in obj:
+            changed |= _migrate_urls(item)
+    return changed
+
+
+def _migrate_state_hosts(state):
+    """Move a saved state off the retired forge.sp-tarkov.com hosts. The mods
+    dict is keyed by mod link, so its keys get rewritten too -- otherwise the
+    next check would treat every known mod as newly discovered. Returns True
+    if the state changed and should be persisted."""
+    changed = _migrate_urls(state)
+
+    mods = state.get("mods")
+    if isinstance(mods, dict):
+        remapped = {}
+        for link, mod in mods.items():
+            # A pre-migration duplicate of an already-migrated entry would
+            # collide here; keep whichever was stored first rather than
+            # letting a stale copy overwrite a current one.
+            remapped.setdefault(_migrated_url(link), mod)
+        if remapped != mods:
+            state["mods"] = remapped
+            changed = True
+
+    return changed
+
+
 def load_state():
     if STATE_FILE.exists():
-        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        if _migrate_state_hosts(state):
+            # Persist right away so the rewrite is a one-time cost that
+            # survives even if the app is closed before its first check.
+            save_state(state)
+        return state
     return {"mods": {}}
 
 

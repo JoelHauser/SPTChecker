@@ -1,6 +1,8 @@
 ## SPTChecker
 
-A lightweight Windows desktop app that monitors the [SPT Forge](https://forge.sp-tarkov.com/mods) for new and updated mods in real time.
+A lightweight Windows desktop app that monitors the [SPT Forge](https://sp-mod.com/mods) for new and updated mods in real time.
+
+> **Moved to sp-mod.com:** The Forge changed hands and now lives at **sp-mod.com**; the old `forge.sp-tarkov.com` is offline. Version 3.3.0 and later point at the new site — **older versions no longer work at all** and must be updated. Your saved history carries over automatically on first launch (mod ids were preserved across the move), so you won't be re-notified about mods you'd already seen.
 
 > **Note on antivirus flags:** A small number of vendors may flag this exe as malicious. Most of them (ALYac, Arcabit, Emsisoft, eScan, GData, VIPRE) all run BitDefender's engine under the hood and are triggering off the same single false positive detection. These are not real threats. Source code is open on GitHub.
 
