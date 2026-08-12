@@ -15,7 +15,7 @@ from .config import (
     SEPARATOR, STATE_FIELDS, STATUS_BG, TEXT, TEXT_BRIGHT, TEXT_DIM,
     WINDOW_DEFAULT_GEOMETRY, WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH,
 )
-from .feed import fetch_feeds, unpublished_links
+from .feed import ForgeBlocked, fetch_feeds, unpublished_links
 from .localmods import detect_spt_version, scan_installed_mods
 from .matcher import match_local_mods
 from .platform import (
@@ -501,6 +501,8 @@ class SPTCheckerApp:
 
             self.root.after(0, self._apply, display_new, display_upd, first_run,
                             len(notify_new), len(notify_upd))
+        except ForgeBlocked as exc:
+            self.root.after(0, self._on_error, str(exc), "")
         except Exception as exc:
             self.root.after(0, self._on_error, str(exc))
 
@@ -570,13 +572,44 @@ class SPTCheckerApp:
 
         self._schedule_next()
 
-    def _on_error(self, msg):
+    def _on_error(self, msg, prefix="Error: "):
         self._checking = False
         self._btn.configure(state="normal", text="Check Now")
         self._forge_dot.configure(fg="#e53935")
-        self._lbl_status.configure(text=f"Error: {msg}")
+        self._lbl_status.configure(text=f"{prefix}{msg}")
+        # A failed check leaves both columns empty on a cold start, since
+        # nothing has rendered yet -- fall back to the last results saved to
+        # state so the window still shows the most recent known mods (stale,
+        # but far better than blank) alongside the reason it couldn't refresh.
+        self._show_cached_results()
         self._next_check_ts = time.time() + 300
         self._tick_timer()
+
+    def _show_cached_results(self):
+        """Render the last successfully-fetched mods from saved state.
+
+        Only fills genuinely empty columns: once a check has rendered live
+        results this session, those are newer than anything on disk and must
+        not be replaced by them.
+        """
+        if self._new_sig is not None or self._upd_sig is not None:
+            return
+        cached_new = self.state.get("display_new", [])
+        cached_upd = self.state.get("display_updated", [])
+        if not cached_new and not cached_upd:
+            return
+        for mod in cached_new + cached_upd:
+            # Thumbnails come from the on-disk cache; a miss can't be fetched
+            # while the site is unreachable, so it falls back to a placeholder.
+            pil = download_thumb(mod.get("thumb_url"))
+            mod["_pil"] = pil if pil else placeholder_thumb()
+            mod["is_fresh"] = False
+        self._new_sig = self._render_column(
+            self._new_frame, cached_new, self._new_sig, False,
+            "", "No new mods detected yet.")
+        self._upd_sig = self._render_column(
+            self._upd_frame, cached_upd, self._upd_sig, False,
+            "", "No updates detected yet.")
 
     def _render_column(self, frame, mods, prev_sig, first_run, baseline_text, empty_text):
         """Render one column, returning its new content signature. When the
