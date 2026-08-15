@@ -14,9 +14,12 @@ from .config import (
 _MOD_ID_RE = re.compile(r"/mod/(\d+)/")
 
 _session = requests.Session()
-_session.headers["User-Agent"] = "SPTModChecker/3.3.0"
+_session.headers["User-Agent"] = "SPTModChecker/3.3.1"
 
 _API_HEADERS = {"Accept": "application/json"}
+# The RSS routes previously sent no Accept at all, leaving content negotiation
+# to the server's default -- which is the HTML page, not the feed.
+_RSS_HEADERS = {"Accept": "application/rss+xml, application/xml;q=0.9, */*;q=0.8"}
 
 # The Forge allows ~300 requests per window, and that budget is shared by
 # every caller in the app -- the periodic feed check and the local-mod scan
@@ -28,15 +31,48 @@ _throttle_lock = threading.Lock()
 _last_request_ts = 0.0
 
 
+class ForgeBlocked(Exception):
+    """The host answered, but refused to serve us at the edge rather than at
+    the application -- currently a Cloudflare interactive challenge.
+
+    Distinct from an ordinary HTTP error because the remedy is different and
+    nothing the app can retry its way out of: no header, endpoint or backoff
+    changes the outcome, since passing the challenge requires executing its
+    JavaScript in a real browser to earn a `cf_clearance` cookie. Raised as
+    its own type so the check flow can report the real situation instead of
+    surfacing a bare "403 Client Error" that reads like a bug in the app.
+    """
+
+
 def get_session():
     return _session
+
+
+def _is_challenge(resp):
+    """True when a response is a Cloudflare bot challenge rather than content.
+
+    `Cf-Mitigated: challenge` is the explicit signal and is checked first; the
+    status/content-type pair is a fallback for edge configs that omit it. Both
+    matter because the challenge is served as 403 with an HTML body, which is
+    otherwise indistinguishable from a genuine application-level 403.
+    """
+    if resp.headers.get("Cf-Mitigated", "").lower() == "challenge":
+        return True
+    return (resp.status_code in (403, 503)
+            and resp.headers.get("Server", "").lower() == "cloudflare"
+            and "text/html" in resp.headers.get("Content-Type", ""))
 
 
 def _forge_request(method, url, retries=3, **kw):
     """Single chokepoint for all Forge requests: enforces a minimum interval
     between requests app-wide and retries on 429 -- a silently-swallowed 429
     looks identical to a real "not found" to callers otherwise. Returns the
-    response without raising; callers check status."""
+    response without raising; callers check status.
+
+    The one exception is an edge challenge, which raises ForgeBlocked: it is
+    not a per-request condition callers can meaningfully handle one at a time,
+    and retrying only burns the rate-limit budget.
+    """
     global _last_request_ts
     for attempt in range(retries + 1):
         with _throttle_lock:
@@ -45,6 +81,10 @@ def _forge_request(method, url, retries=3, **kw):
                 time.sleep(wait)
             _last_request_ts = time.monotonic()
         resp = _session.request(method, url, **kw)
+        if _is_challenge(resp):
+            raise ForgeBlocked(
+                "sp-mod.com is blocking automated requests (Cloudflare challenge)"
+            )
         if resp.status_code != 429 or attempt == retries:
             return resp
         time.sleep(float(resp.headers.get("Retry-After", 2)))
@@ -100,12 +140,20 @@ def _parse_api_mod(item):
 
 def _fetch_mods(params, timeout=15):
     """Fetch and parse one page of mods from the API; [] on any failure,
-    matching this module's fail-soft convention."""
+    matching this module's fail-soft convention.
+
+    ForgeBlocked is deliberately not swallowed: fail-soft exists to keep one
+    flaky request from taking down a check, but an edge block affects every
+    request equally, and degrading it to [] would present a site-wide outage
+    as "no mods found".
+    """
     try:
         resp = _forge_request("get", API_URL, params={"include": "versions,category", **params},
                               headers=_API_HEADERS, timeout=timeout)
         resp.raise_for_status()
         return [_parse_api_mod(item) for item in resp.json().get("data", [])]
+    except ForgeBlocked:
+        raise
     except Exception:
         return []
 
@@ -194,10 +242,25 @@ def lookup_updates(pairs, spt_version):
 
 
 def _parse_rss(url):
-    """Parse an RSS feed and return ET root."""
-    resp = _forge_request("get", url, timeout=30)
-    resp.raise_for_status()
-    return ET.fromstring(resp.content)
+    """Fetch and parse an RSS feed into mod dicts; [] if the feed is
+    unavailable or malformed.
+
+    Fail-soft because RSS is the app's secondary source -- everything it
+    carries is also available from the API, which fetch_feeds() has already
+    queried by the time this runs. Previously this was the one unguarded
+    request in the whole startup path, so an RSS-only problem (a feed route
+    that moved, a transient 5xx, a truncated body) aborted the entire check
+    and surfaced a raw HTTP error, despite usable API results sitting right
+    there. A site-wide block still propagates -- see _fetch_mods.
+    """
+    try:
+        resp = _forge_request("get", url, headers=_RSS_HEADERS, timeout=30)
+        resp.raise_for_status()
+        return _extract_mods(ET.fromstring(resp.content))
+    except ForgeBlocked:
+        raise
+    except Exception:
+        return []
 
 
 def _extract_mods(root):
@@ -305,8 +368,13 @@ def fetch_feeds():
     api_updated = _fetch_api_mods(sort="-updated_at")
     api_newest = _fetch_api_mods(sort="-created_at")
 
-    newest = _extract_mods(_parse_rss(FEED_URL))
-    rss_updated = _extract_mods(_parse_rss(FEED_UPDATED_URL))
+    # The API is authoritative for both columns; RSS is additive, contributing
+    # entries that fall outside the API's fetched window. When a feed is
+    # unavailable its column falls back to the API set rather than rendering
+    # empty -- "new mods" in particular used to come from RSS alone, so a feed
+    # failure blanked that column even with API results already in hand.
+    newest = _parse_rss(FEED_URL) or api_newest
+    rss_updated = _parse_rss(FEED_UPDATED_URL)
 
     # RSS entries lack several API-only fields -- build per-link lookups from the
     # API sets and enrich both columns, whichever source each entry came from.

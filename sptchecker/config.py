@@ -42,7 +42,12 @@ MIGRATED_URL_FIELDS = ("link", "thumb_url")
 
 # ── Behaviour ──────────────────────────────────────────────────────────
 
-CHECK_INTERVAL_MINUTES = 5
+# Matched to the shortest cache window sp-mod.com serves: its maintainer
+# confirmed every endpoint carries at least 15 minutes of cached data, so
+# checking faster than this spends requests on bytes that cannot have changed.
+# Polling every 5 minutes made two of every three checks pure waste, against a
+# host that had already turned on bot countermeasures once.
+CHECK_INTERVAL_MINUTES = 15
 MAX_PER_CATEGORY = 7
 THUMB_SIZE = (52, 52)
 STATE_FIELDS = (
