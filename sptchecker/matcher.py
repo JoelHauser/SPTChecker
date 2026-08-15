@@ -2,7 +2,9 @@ import difflib
 import re
 
 from .config import FUZZY_MATCH_THRESHOLD
-from .feed import lookup_by_guid, lookup_by_name, lookup_by_query, lookup_updates
+from .feed import (
+    ForgeRateLimited, lookup_by_guid, lookup_by_name, lookup_by_query, lookup_updates,
+)
 
 
 def _normalize_name(name):
@@ -199,30 +201,48 @@ def _rank_candidates(candidates, name, author=None, original_name=None):
 def match_one(local_mod):
     """Match a single locally-scanned mod against the Forge. GUID lookup is
     tried first (exact, cheap); falls back to a name search + ranking cascade
-    only when there's no clean GUID or the GUID lookup missed."""
+    only when there's no clean GUID or the GUID lookup missed.
+
+    Sets lookup_failed when the Forge rate-limited us rather than answering.
+    That case has to stay distinct from an honest miss: every lookup here
+    returns "no match" on failure, so without it a throttled scan would
+    quietly report a wall of perfectly ordinary installed mods as missing
+    from the Forge, blaming the mods for the app's own request rate.
+    """
     guid = local_mod.get("guid")
-    forge = lookup_by_guid(guid) if guid else None
-    match_method = "guid" if forge else None
+    try:
+        forge = lookup_by_guid(guid) if guid else None
+        match_method = "guid" if forge else None
 
-    if not forge:
-        candidates, matched_term = _search_by_name(local_mod.get("name"), guid)
-        forge, match_method = _rank_candidates(
-            candidates, matched_term, local_mod.get("author"),
-            original_name=local_mod.get("name"))
+        if not forge:
+            candidates, matched_term = _search_by_name(local_mod.get("name"), guid)
+            forge, match_method = _rank_candidates(
+                candidates, matched_term, local_mod.get("author"),
+                original_name=local_mod.get("name"))
 
-    if not forge:
-        # filter[name] only matches a literal substring of the stored title,
-        # which structurally can't bridge every gap between a mod's internal
-        # name and its Forge listing. query= is a separate, undocumented
-        # parameter that does real fuzzy/full-text search -- last resort
-        # since it returns looser candidates, still filtered through the
-        # same ranking cascade so a weak match still can't slip through as
-        # a false positive.
-        candidates = lookup_by_query(local_mod.get("name"))
-        forge, match_method = _rank_candidates(
-            candidates, local_mod.get("name"), local_mod.get("author"))
-        if forge:
-            match_method = f"query_{match_method}"
+        if not forge:
+            # filter[name] only matches a literal substring of the stored
+            # title, which structurally can't bridge every gap between a
+            # mod's internal name and its Forge listing. query= is a
+            # separate, undocumented parameter that does real fuzzy/full-text
+            # search -- last resort since it returns looser candidates, still
+            # filtered through the same ranking cascade so a weak match still
+            # can't slip through as a false positive.
+            candidates = lookup_by_query(local_mod.get("name"))
+            forge, match_method = _rank_candidates(
+                candidates, local_mod.get("name"), local_mod.get("author"))
+            if forge:
+                match_method = f"query_{match_method}"
+    except ForgeRateLimited:
+        return {
+            "local": local_mod,
+            "forge": None,
+            "match_method": None,
+            "current_version": local_mod.get("version"),
+            "available_version": None,
+            "update_available": False,
+            "lookup_failed": True,
+        }
 
     current_version = local_mod.get("version")
     available_version = forge.get("version") if forge else None
@@ -238,6 +258,7 @@ def match_one(local_mod):
         "current_version": current_version,
         "available_version": available_version,
         "update_available": update_available,
+        "lookup_failed": False,
     }
 
 

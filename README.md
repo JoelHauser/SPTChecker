@@ -1,8 +1,8 @@
 ## SPTChecker
 
-A lightweight Windows desktop app that monitors the [SPT Forge](https://sp-mod.com/mods) for new and updated mods in real time — and, optionally, checks your own installed mods against it.
+A lightweight Windows desktop app that watches the [SPT Forge](https://sp-mod.com/mods) for new and updated mods — and, optionally, checks your own installed mods against it.
 
-> **The Forge moved to sp-mod.com.** The Forge changed hands and now lives at **sp-mod.com**; the old `forge.sp-tarkov.com` is fully offline. **Version 3.3.0 is a required update** — every earlier version points at the dead domain and cannot reach anything at all. Your saved history carries over automatically on first launch: mod ids were preserved across the move, so already-seen mods aren't re-reported and your tracked count stays intact.
+> **The Forge moved to sp-mod.com.** The Forge changed hands and now lives at **sp-mod.com**; the old `forge.sp-tarkov.com` is fully offline. **Update to 3.3.1** — anything before 3.3.0 points at the dead domain and cannot reach anything at all. Your saved history carries over automatically on first launch: mod ids were preserved across the move, so already-seen mods aren't re-reported and your tracked count stays intact.
 
 > **Note on antivirus flags:** A small number of vendors may flag this exe as malicious. Most of them (ALYac, Arcabit, Emsisoft, eScan, GData, VIPRE) all run BitDefender's engine under the hood and are triggering off the same single false positive detection. These are not real threats. Source code is open on GitHub.
 
@@ -21,7 +21,7 @@ It can also do the reverse: point it at your SPT install folder and it'll scan y
 1. On first launch, the app populates both columns — **New Mods** and **Recently Updated**, mirroring the website's own tabs.
 2. Both columns are built from the Forge's RSS feeds and public API — **no HTML scraping**.
 3. Every 15 minutes it re-fetches and compares against stored state — matching the shortest cache window sp-mod.com serves, since checking more often can't surface anything newer.
-4. Newly seen mods are flagged **New**. The Recently Updated column tracks fresh releases of existing mods in real time.
+4. Newly seen mods are flagged **New**. The Recently Updated column tracks fresh releases of existing mods.
 5. If a mod author unpublishes their mod, it's automatically removed from the display.
 6. Results persist across checks and restarts — new findings push older entries down in a rolling history (up to 7 per column).
 7. If a check fails (site unreachable, network hiccup, rate limiting), the app doesn't crash — it shows the error in the status bar and quietly retries on the next cycle.
@@ -102,5 +102,7 @@ Click **Local Mods** to check your own installed mods against the Forge — enti
 ---
 
 ### Credits
+
+Huge thanks to **AlexTushonka** — living legend — for taking on the Forge, keeping it running at sp-mod.com, and being genuinely great to deal with. This app is only useful because that site exists.
 
 Local mod scanning was inspired by Refringe's **Check Mods** CLI.

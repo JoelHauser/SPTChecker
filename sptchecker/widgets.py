@@ -828,13 +828,20 @@ class LocalScanSettingsWindow(FramelessPopup):
 
         updates = [r for r in results if r["update_available"]]
         up_to_date = [r for r in results if r["forge"] and not r["update_available"]]
-        unmatched = [r for r in results if not r["forge"]]
+        # A rate-limited lookup comes back shaped exactly like a genuine miss:
+        # no forge match. Split the two apart before display, so a throttled
+        # scan reports what actually happened instead of accusing a pile of
+        # perfectly normal installed mods of not existing.
+        unchecked = [r for r in results if not r["forge"] and r.get("lookup_failed")]
+        unmatched = [r for r in results if not r["forge"] and not r.get("lookup_failed")]
 
         summary = (
             f"{len(results)} mods scanned  —  {len(updates)} update"
             f"{'s' if len(updates) != 1 else ''} available, {len(up_to_date)} up to date, "
             f"{len(unmatched)} not found on Forge"
         )
+        if unchecked:
+            summary += f", {len(unchecked)} couldn't be checked"
         tk.Label(self._results_frame, text=summary, font=("Segoe UI", 9), fg=TEXT_BRIGHT,
                  bg=BG, wraplength=self.WIDTH - 44, justify="left").pack(
             fill="x", padx=14, pady=(10, 4), anchor="w")
@@ -873,6 +880,15 @@ class LocalScanSettingsWindow(FramelessPopup):
         if unmatched:
             self._add_section_header("Not Found on Forge", color="#e53935")
             for r in unmatched:
+                name = r["local"].get("name") or "(unknown)"
+                self._add_plain_row(f"{name}  —  v{r['local'].get('version') or '?'}")
+
+        if unchecked:
+            self._add_section_header("Couldn't Check", color=ACCENT_UPD)
+            self._add_plain_row(
+                "The Forge rate-limited these lookups — they may well be fine. "
+                "Scan again in a minute.")
+            for r in unchecked:
                 name = r["local"].get("name") or "(unknown)"
                 self._add_plain_row(f"{name}  —  v{r['local'].get('version') or '?'}")
 

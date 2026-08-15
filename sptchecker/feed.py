@@ -3,6 +3,7 @@ import re
 import threading
 import time
 import xml.etree.ElementTree as ET
+from collections import deque
 
 import requests
 
@@ -21,14 +22,67 @@ _API_HEADERS = {"Accept": "application/json"}
 # to the server's default -- which is the HTML page, not the feed.
 _RSS_HEADERS = {"Accept": "application/rss+xml, application/xml;q=0.9, */*;q=0.8"}
 
-# The Forge allows ~300 requests per window, and that budget is shared by
-# every caller in the app -- the periodic feed check and the local-mod scan
-# run on separate threads and can overlap at startup. Pacing and 429 retry
-# live here, in the one place every Forge request passes through, so no
-# call site can forget them.
+# Rate limits as published by sp-mod.com's maintainer: 50 requests per minute
+# per IP against /api/v0/, which earns a one minute timeout once exceeded, and
+# 150/minute for everything else before a challenge is served. Metered as two
+# independent budgets because that is how the server counts them -- charging
+# RSS and thumbnail traffic to the API allowance would throttle local scans for
+# no reason at all. Both sit under the published ceiling, since the app cannot
+# see what else shares its IP: a second copy running, or the user's browser on
+# the Forge in another window.
+_API_RATE_LIMIT = 40
+_MEDIA_RATE_LIMIT = 100
+_RATE_WINDOW_SECONDS = 60.0
+
+# Kept alongside the windows below purely to smooth bursts. Without it a scan
+# would spend a full minute's budget in its first ten seconds and then sit
+# still, which is compliant but reads to the user as a freeze.
 _REQUEST_MIN_INTERVAL = 0.25
 _throttle_lock = threading.Lock()
 _last_request_ts = 0.0
+
+
+class _RateLimiter:
+    """Sliding-window limiter: at most `limit` requests in any `window`
+    seconds, blocking callers past that until the oldest falls back out.
+
+    A moving window rather than a fixed delay per request, so a routine check
+    (a handful of requests) still completes promptly while a long local scan
+    settles into a sustainable rate instead of front-loading the whole budget.
+    Also strictly safer than the fixed windows a server typically counts in:
+    no 60 second span can ever contain more than `limit` requests, whereas a
+    fixed delay can still stack either side of a window boundary.
+    """
+
+    def __init__(self, limit, window):
+        self._limit = limit
+        self._window = window
+        self._hits = deque()
+        self._lock = threading.Lock()
+
+    def acquire(self):
+        while True:
+            with self._lock:
+                cutoff = time.monotonic() - self._window
+                while self._hits and self._hits[0] <= cutoff:
+                    self._hits.popleft()
+                if len(self._hits) < self._limit:
+                    self._hits.append(time.monotonic())
+                    return
+                wait = self._hits[0] - cutoff
+            # Slept outside the lock so other threads can still retire their
+            # own entries meanwhile; the loop re-checks under it, so waking
+            # early or losing the race to another waiter is harmless.
+            time.sleep(max(wait, 0.05))
+
+
+_api_limiter = _RateLimiter(_API_RATE_LIMIT, _RATE_WINDOW_SECONDS)
+_media_limiter = _RateLimiter(_MEDIA_RATE_LIMIT, _RATE_WINDOW_SECONDS)
+
+
+def _limiter_for(url):
+    """Pick the budget a URL is metered against -- see the limits above."""
+    return _api_limiter if "/api/v0/" in url else _media_limiter
 
 
 class ForgeBlocked(Exception):
@@ -44,8 +98,36 @@ class ForgeBlocked(Exception):
     """
 
 
+class ForgeRateLimited(Exception):
+    """The Forge refused a request because we asked too often.
+
+    Raised only once the 429 retry budget in _forge_request is spent, so by
+    the time a caller sees this, waiting it out has already been tried. Kept
+    as its own type because it means "we could not find out", not "there is
+    nothing there" -- a local-mod lookup that quietly swallowed it would
+    report an installed mod as missing from the Forge while its listing sits
+    there perfectly intact, which is a worse lie than admitting the check
+    didn't happen.
+    """
+
+
 def get_session():
     return _session
+
+
+def media_request(method, url, **kw):
+    """Fetch a non-API asset -- mod thumbnails on files.sp-mod.com -- under
+    the non-API budget.
+
+    Separate from _forge_request because these aren't API calls: no JSON, no
+    challenge handling, and no 429 retry, since a thumbnail that doesn't
+    arrive is cosmetic and falls back to a placeholder. They are still
+    requests to the same IP-metered host though, so they have to be counted;
+    they previously went straight out through the bare session and were the
+    one thing in the app no limiter could see.
+    """
+    _media_limiter.acquire()
+    return _session.request(method, url, **kw)
 
 
 def _is_challenge(resp):
@@ -69,12 +151,16 @@ def _forge_request(method, url, retries=3, **kw):
     looks identical to a real "not found" to callers otherwise. Returns the
     response without raising; callers check status.
 
-    The one exception is an edge challenge, which raises ForgeBlocked: it is
-    not a per-request condition callers can meaningfully handle one at a time,
-    and retrying only burns the rate-limit budget.
+    Two conditions raise instead of returning. An edge challenge raises
+    ForgeBlocked: it is not a per-request condition callers can meaningfully
+    handle one at a time, and retrying only burns the rate-limit budget. A 429
+    that outlives the retry budget raises ForgeRateLimited rather than handing
+    back the 429 for callers to mistake for an empty result.
     """
     global _last_request_ts
+    limiter = _limiter_for(url)
     for attempt in range(retries + 1):
+        limiter.acquire()
         with _throttle_lock:
             wait = _REQUEST_MIN_INTERVAL - (time.monotonic() - _last_request_ts)
             if wait > 0:
@@ -85,10 +171,11 @@ def _forge_request(method, url, retries=3, **kw):
             raise ForgeBlocked(
                 "sp-mod.com is blocking automated requests (Cloudflare challenge)"
             )
-        if resp.status_code != 429 or attempt == retries:
+        if resp.status_code != 429:
             return resp
+        if attempt == retries:
+            raise ForgeRateLimited("sp-mod.com is rate limiting this client")
         time.sleep(float(resp.headers.get("Retry-After", 2)))
-    return resp
 
 
 def strip_html(raw):
@@ -142,17 +229,19 @@ def _fetch_mods(params, timeout=15):
     """Fetch and parse one page of mods from the API; [] on any failure,
     matching this module's fail-soft convention.
 
-    ForgeBlocked is deliberately not swallowed: fail-soft exists to keep one
-    flaky request from taking down a check, but an edge block affects every
-    request equally, and degrading it to [] would present a site-wide outage
-    as "no mods found".
+    ForgeBlocked and ForgeRateLimited are deliberately not swallowed:
+    fail-soft exists to keep one flaky request from taking down a check, but
+    neither of those is one flaky request. An edge block affects every request
+    equally, and degrading it to [] would present a site-wide outage as "no
+    mods found"; a rate limit means the answer is unknown, and local-mod
+    matching has to be able to tell that apart from a genuine miss.
     """
     try:
         resp = _forge_request("get", API_URL, params={"include": "versions,category", **params},
                               headers=_API_HEADERS, timeout=timeout)
         resp.raise_for_status()
         return [_parse_api_mod(item) for item in resp.json().get("data", [])]
-    except ForgeBlocked:
+    except (ForgeBlocked, ForgeRateLimited):
         raise
     except Exception:
         return []
