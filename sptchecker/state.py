@@ -88,9 +88,16 @@ def save_state(state):
     STATE_FILE.write_text(json.dumps(state, separators=(",", ":")), encoding="utf-8")
 
 
+# Bumped when the rendering below changes, so caches written by an older
+# version aren't reused -- entries are keyed by URL alone, which stays the
+# same even though the image we derive from it does not. Orphaned entries
+# from a previous generation age out via purge_old_thumbs.
+_THUMB_CACHE_GEN = 2
+
+
 def _thumb_path(url):
     key = hashlib.md5(url.encode()).hexdigest()[:16]
-    return CACHE_DIR / f"{key}.jpg"
+    return CACHE_DIR / f"{key}-{_THUMB_CACHE_GEN}.jpg"
 
 
 def download_thumb(url):
@@ -108,12 +115,21 @@ def download_thumb(url):
     try:
         r = get_session().get(url, timeout=15)
         r.raise_for_status()
-        img = Image.open(BytesIO(r.content)).convert("RGB")
+        # RGBA, not RGB: a straight convert("RGB") discards the alpha channel
+        # and exposes whatever RGB sits underneath the transparent pixels,
+        # which is arbitrary leftover data rather than anything the author
+        # meant to be seen -- one Forge thumbnail hides an entire unrelated
+        # landscape back there. Browsers composite against the page instead,
+        # which is why those mods look right on the Forge and wrong here.
+        # Passing the image as its own paste mask composites it onto the card
+        # colour the same way; fully opaque images have an all-255 mask and
+        # are unaffected.
+        img = Image.open(BytesIO(r.content)).convert("RGBA")
         img.thumbnail(THUMB_SIZE, Image.LANCZOS)
         canvas = Image.new("RGB", THUMB_SIZE, CARD_BG)
         x = (THUMB_SIZE[0] - img.width) // 2
         y = (THUMB_SIZE[1] - img.height) // 2
-        canvas.paste(img, (x, y))
+        canvas.paste(img, (x, y), img)
         canvas.save(cached, "JPEG", quality=85)
         return canvas
     except Exception:
