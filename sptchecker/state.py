@@ -12,7 +12,7 @@ from .config import (
     SEPARATOR, STATE_FILE, TEXT_DIM, THUMB_MAX_AGE_DAYS, THUMB_SIZE,
     TOP_STATS_WINDOW_DAYS, TREND_WINDOW_DAYS,
 )
-from .feed import get_session
+from .feed import media_request
 from .utils import parse_dt
 
 
@@ -113,7 +113,7 @@ def download_thumb(url):
             cached.unlink(missing_ok=True)
 
     try:
-        r = get_session().get(url, timeout=15)
+        r = media_request("get", url, timeout=15)
         r.raise_for_status()
         # RGBA, not RGB: a straight convert("RGB") discards the alpha channel
         # and exposes whatever RGB sits underneath the transparent pixels,
