@@ -10,7 +10,7 @@ A lightweight Windows desktop app that monitors the [SPT Forge](https://sp-mod.c
 
 ### What it does
 
-SPTChecker runs quietly in your system tray and checks the Forge every 5 minutes for changes. When it finds something, it sends a Windows toast notification and updates the UI — no need to manually browse the Forge to stay up to date.
+SPTChecker runs quietly in your system tray and checks the Forge every 15 minutes for changes. When it finds something, it sends a Windows toast notification and updates the UI — no need to manually browse the Forge to stay up to date.
 
 It can also do the reverse: point it at your SPT install folder and it'll scan your actually-installed mods and tell you which ones have updates waiting (see **Local mod scanning** below) — entirely opt-in, off by default.
 
@@ -20,7 +20,7 @@ It can also do the reverse: point it at your SPT install folder and it'll scan y
 
 1. On first launch, the app populates both columns — **New Mods** and **Recently Updated**, mirroring the website's own tabs.
 2. Both columns are built from the Forge's RSS feeds and public API — **no HTML scraping**.
-3. Every 5 minutes it re-fetches and compares against stored state.
+3. Every 15 minutes it re-fetches and compares against stored state — matching the shortest cache window sp-mod.com serves, since checking more often can't surface anything newer.
 4. Newly seen mods are flagged **New**. The Recently Updated column tracks fresh releases of existing mods in real time.
 5. If a mod author unpublishes their mod, it's automatically removed from the display.
 6. Results persist across checks and restarts — new findings push older entries down in a rolling history (up to 7 per column).
@@ -98,20 +98,6 @@ Click **Local Mods** to check your own installed mods against the Forge — enti
 - **Fails safe, never guesses** — Ambiguous matches are reported as unmatched rather than guessed at, and any network failure leaves the display untouched instead of hiding mods
 - **Low resource usage** — Connection pooling, shared fonts, a smart timer that sleeps when the window is hidden, and state writes skipped when nothing changed
 - **Standalone .exe** — No Python installation required, just download and run
-
----
-
-### Building from source
-
-Dependencies are `requests`, `Pillow`, `pystray`, and `winotify` (see `requirements.txt`); building the exe also needs PyInstaller.
-
-```
-pip install -r requirements.txt
-python main.py                                  # run directly
-python -m PyInstaller SPTModChecker_v3.3.0.spec # build the standalone exe
-```
-
-The local-scan feature also uses `assets/ModReader.exe`, a small standalone .NET helper (source in `modreader/`) that reads mod metadata through real CLR reflection. It's built separately with `dotnet publish` and copied into `assets/`; PyInstaller just bundles it.
 
 ---
 

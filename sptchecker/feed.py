@@ -14,7 +14,7 @@ from .config import (
 _MOD_ID_RE = re.compile(r"/mod/(\d+)/")
 
 _session = requests.Session()
-_session.headers["User-Agent"] = "SPTModChecker/3.3.0"
+_session.headers["User-Agent"] = "SPTModChecker/3.3.1"
 
 _API_HEADERS = {"Accept": "application/json"}
 # The RSS routes previously sent no Accept at all, leaving content negotiation
