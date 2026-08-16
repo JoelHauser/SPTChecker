@@ -432,6 +432,26 @@ def unpublished_links(links):
             for link in group}
 
 
+def lookup_mod_by_id(mod_id):
+    """Fetch one mod by its Forge id, in this app's internal mod shape.
+
+    Used for the app's own listing, to find out whether a newer release has
+    been published. Routed through _forge_request like everything else, so
+    it spends from the same metered API budget rather than sneaking an extra
+    request past it. Returns None on any failure -- the caller treats not
+    knowing as "no update", which is the quiet outcome.
+    """
+    try:
+        resp = _forge_request("get", f"{API_MOD_URL}/{mod_id}",
+                              params={"include": "versions"},
+                              headers=_API_HEADERS, timeout=15)
+        resp.raise_for_status()
+        data = resp.json().get("data")
+    except Exception:
+        return None
+    return _parse_api_mod(data) if isinstance(data, dict) else None
+
+
 def fetch_author_id(mod_link):
     """On-demand lookup of a mod's owner id from its page link.
 
