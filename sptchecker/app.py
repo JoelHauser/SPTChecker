@@ -12,7 +12,7 @@ from .config import (
     ACCENT_NEW, ACCENT_UPD, BG, CARD_BG,
     CATEGORY_COLOR_DEFAULT, CATEGORY_COLORS,
     CHECK_INTERVAL_MINUTES,
-    DISPLAY_FIELDS, FORGE_URL, GITHUB_RELEASES_PAGE, MAX_PER_CATEGORY,
+    DISPLAY_FIELDS, FORGE_MOD_PAGE, FORGE_URL, MAX_PER_CATEGORY,
     SEPARATOR, STATE_FIELDS, STATUS_BG, TEXT, TEXT_BRIGHT, TEXT_DIM,
     UPDATE_CHECK_INTERVAL_HOURS,
     WINDOW_DEFAULT_GEOMETRY, WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH,
@@ -144,6 +144,11 @@ class SPTCheckerApp:
         flat_button(hdr, "Stats", self._show_stats).pack(side="left", padx=(6, 0))
         flat_button(hdr, "Local Mods", self._show_local_scan).pack(side="left", padx=(6, 0))
 
+        # TEST BUTTON -- toggles the update indicator so its look can be
+        # checked without waiting for a real release. Remove before shipping,
+        # along with _preview_update_dot.
+        flat_button(hdr, "Test Dot", self._preview_update_dot).pack(side="left", padx=(6, 0))
+
         self._btn = flat_button(hdr, "Check Now", self._check_now)
         self._btn.pack(side="right")
         self._tooltip_id = None
@@ -200,10 +205,11 @@ class SPTCheckerApp:
 
         # Built but left unpacked -- it only appears once a newer release is
         # actually found, so the bar stays quiet for anyone already current.
+        self._update_url = FORGE_MOD_PAGE
         self._update_lbl = tk.Label(bar, text="", font=("Segoe UI", 8, "bold"),
                                     fg=ACCENT_NEW, bg=STATUS_BG, cursor="hand2")
         self._update_lbl.bind(
-            "<Button-1>", lambda _e: webbrowser.open(GITHUB_RELEASES_PAGE))
+            "<Button-1>", lambda _e: webbrowser.open(self._update_url))
 
     @staticmethod
     def _set_placeholder(frame, text):
@@ -458,22 +464,35 @@ class SPTCheckerApp:
         # Never raises: check_for_update swallows every failure and returns
         # None, since not knowing whether an update exists is not worth
         # bothering anyone about.
-        tag = check_for_update()
-        if tag:
-            self.root.after(0, self._show_update_available, tag)
+        found = check_for_update()
+        if found:
+            self.root.after(0, self._show_update_available,
+                            found["version"], found["url"])
         self.root.after(0, self._schedule_update_check,
                         UPDATE_CHECK_INTERVAL_HOURS * 3600 * 1000)
 
-    def _show_update_available(self, tag):
+    def _show_update_available(self, version, url=FORGE_MOD_PAGE):
         """Surface the newer release in the status bar. Packed on first
         discovery only -- re-packing on every subsequent check would shuffle
         the bar's layout for no reason."""
-        self._update_lbl.configure(text=f"●  {tag} available")
+        self._update_url = url
+        self._update_lbl.configure(text=f"●  v{version} available")
         if not self._update_lbl.winfo_ismapped():
             self._update_lbl.pack(side="right", padx=(0, 4))
             self._bind_tooltip(
                 self._update_lbl,
-                f"A newer release ({tag}) is on GitHub.\nClick to open the download page.")
+                f"SPTChecker v{version} is on the Forge.\nClick to open its page.")
+
+    def _preview_update_dot(self):
+        """Temporary: force the indicator on so its appearance can be checked
+        without waiting for a real release. Remove this and its button before
+        shipping -- see the TEST BUTTON marker in the header."""
+        if self._update_lbl.winfo_ismapped():
+            self._update_lbl.pack_forget()
+            self._lbl_status.configure(text="Update indicator hidden (preview)")
+        else:
+            self._show_update_available("9.9.9")
+            self._lbl_status.configure(text="Update indicator shown (preview)")
 
     # ── Check logic ────────────────────────────────────────────────────
 

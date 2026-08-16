@@ -22,14 +22,14 @@ CACHE_DIR = DATA_DIR / "thumb_cache"
 # build time and can't import this -- keep all three in step when bumping.
 APP_VERSION = "3.3.1"
 
-# Update checking goes to GitHub rather than the Forge deliberately: releases
-# live here, it costs sp-mod.com nothing, and it stays clear of the rate
-# limits the Forge meters us against.
-GITHUB_RELEASES_API = "https://api.github.com/repos/JoelHauser/SPTChecker/releases/latest"
-GITHUB_RELEASES_PAGE = "https://github.com/JoelHauser/SPTChecker/releases/latest"
+# This app's own listing on the Forge -- where users actually download it, so
+# it's the version that matters for "am I out of date". Checked through the
+# same metered request path as everything else, one request per interval.
+FORGE_MOD_ID = 2921
+FORGE_MOD_PAGE = "https://sp-mod.com/mod/2921/sptchecker"
 # Six-hourly, not per check cycle. A release lands every few weeks at most, so
-# checking with the 15-minute mod poll would spend hundreds of requests a day
-# to learn nothing -- and GitHub allows 60/hour per IP unauthenticated.
+# riding the 15-minute mod poll would spend hundreds of requests a day to learn
+# nothing -- against a host that meters us and asked us to ease off.
 UPDATE_CHECK_INTERVAL_HOURS = 6
 
 # ── Feed ───────────────────────────────────────────────────────────────

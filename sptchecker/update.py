@@ -1,54 +1,37 @@
-"""Self-update check against the project's own GitHub releases.
+"""Notice when a newer release of this app has been published.
 
-The app has no auto-updater and is distributed as a standalone exe, so until
-now a fix could only reach someone who happened to re-check where they
-downloaded it. That's how a startup crash stayed live for a user who had
-already tried reinstalling. This doesn't install anything -- it only notices
-that a newer release exists and lets the UI say so.
+The app ships as a standalone exe with no auto-updater, so until now a fix
+could only reach someone who happened to re-check where they downloaded it.
+That is how a startup crash stayed live for a user who had already reinstalled
+trying to clear it. This installs nothing -- it only notices that a newer
+version exists so the UI can say so.
 
-Deliberately points at GitHub rather than the Forge: releases are published
-there, it costs sp-mod.com nothing, and it stays clear of the rate limits the
-Forge meters us against.
+Checked against the app's own Forge listing rather than anywhere else,
+because the Forge is where people actually download it: that is the version a
+user would be comparing themselves to.
 """
-import requests
-
-from .config import APP_VERSION, GITHUB_RELEASES_API
+from .config import APP_VERSION, FORGE_MOD_ID, FORGE_MOD_PAGE
+from .feed import lookup_mod_by_id
 from .utils import is_newer
 
-_session = requests.Session()
-_session.headers["User-Agent"] = f"SPTModChecker/{APP_VERSION}"
-_HEADERS = {"Accept": "application/vnd.github+json"}
 
+def check_for_update(current=APP_VERSION, mod_id=FORGE_MOD_ID):
+    """Return {"version", "url"} for a newer published release, else None.
 
-def latest_release():
-    """The newest published release tag, or None.
+    None covers every failure -- offline, the Forge down or rate limiting us,
+    an unexpected payload -- because this is a background nicety. Not knowing
+    whether a newer build exists is never worth interrupting anyone over, and
+    the app's actual job is unaffected by it.
 
-    None covers every failure -- offline, GitHub down, rate limited, an
-    unexpected payload shape -- because this is a background nicety. Nothing
-    here is worth surfacing an error over: the app's actual job is unaffected
-    by not knowing whether it's current.
+    Compared numerically rather than by string, so a version differing only in
+    segment count ("3.3.1.0" against "3.3.1") can't nag someone already
+    current, and a re-uploaded older version can't advertise itself as an
+    upgrade.
     """
-    try:
-        resp = _session.get(GITHUB_RELEASES_API, headers=_HEADERS, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-    except Exception:
+    mod = lookup_mod_by_id(mod_id)
+    if not mod:
         return None
-    if not isinstance(data, dict) or data.get("draft") or data.get("prerelease"):
+    latest = mod.get("version")
+    if not latest or not is_newer(latest, current):
         return None
-    tag = data.get("tag_name")
-    return tag if isinstance(tag, str) and tag.strip() else None
-
-
-def check_for_update(current=APP_VERSION):
-    """Return the newer release's tag if one exists, else None.
-
-    Compared numerically rather than by string, so a tag that merely differs
-    in decoration ("V3.3.1" against "3.3.1") or in segment count ("3.3.1.0")
-    doesn't nag someone who is already up to date -- and a republished older
-    release can never advertise itself as an upgrade.
-    """
-    tag = latest_release()
-    if tag and is_newer(tag, current):
-        return tag
-    return None
+    return {"version": latest, "url": mod.get("link") or FORGE_MOD_PAGE}
