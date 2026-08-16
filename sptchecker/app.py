@@ -2,6 +2,7 @@ import re
 import threading
 import time
 import tkinter as tk
+import webbrowser
 from datetime import datetime
 
 import pystray
@@ -11,8 +12,9 @@ from .config import (
     ACCENT_NEW, ACCENT_UPD, BG, CARD_BG,
     CATEGORY_COLOR_DEFAULT, CATEGORY_COLORS,
     CHECK_INTERVAL_MINUTES,
-    DISPLAY_FIELDS, FORGE_URL, MAX_PER_CATEGORY,
+    DISPLAY_FIELDS, FORGE_URL, GITHUB_RELEASES_PAGE, MAX_PER_CATEGORY,
     SEPARATOR, STATE_FIELDS, STATUS_BG, TEXT, TEXT_BRIGHT, TEXT_DIM,
+    UPDATE_CHECK_INTERVAL_HOURS,
     WINDOW_DEFAULT_GEOMETRY, WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH,
 )
 from .feed import ForgeBlocked, fetch_feeds, unpublished_links
@@ -26,6 +28,7 @@ from .platform import (
 from .state import (
     compute_stats, download_thumb, load_state, placeholder_thumb, purge_old_thumbs, save_state,
 )
+from .update import check_for_update
 from .widgets import LocalScanSettingsWindow, ModCard, StatsWindow, flat_button
 
 _ICON_SUPERSAMPLE = 4
@@ -194,6 +197,13 @@ class SPTCheckerApp:
         self._lbl_timer = tk.Label(bar, text="", font=("Segoe UI", 8),
                                    fg=TEXT_DIM, bg=STATUS_BG)
         self._lbl_timer.pack(side="right", padx=10)
+
+        # Built but left unpacked -- it only appears once a newer release is
+        # actually found, so the bar stays quiet for anyone already current.
+        self._update_lbl = tk.Label(bar, text="", font=("Segoe UI", 8, "bold"),
+                                    fg=ACCENT_NEW, bg=STATUS_BG, cursor="hand2")
+        self._update_lbl.bind(
+            "<Button-1>", lambda _e: webbrowser.open(GITHUB_RELEASES_PAGE))
 
     @staticmethod
     def _set_placeholder(frame, text):
@@ -429,6 +439,41 @@ class SPTCheckerApp:
         if self._tray:
             self._tray.icon = self._tray_icon_normal
             self._tray.title = "SPTChecker"
+
+    # ── Self-update check ──────────────────────────────────────────────
+
+    def _schedule_update_check(self, delay_ms=3000):
+        """Look for a newer release of the app itself, then re-arm.
+
+        Deliberately off the mod-check cycle and on its own long timer:
+        releases are weeks apart, so tying this to the 15-minute poll would
+        be hundreds of requests a day to learn nothing. The first run is
+        delayed a few seconds so it never competes with the startup check
+        for the window's attention.
+        """
+        self.root.after(delay_ms, lambda: threading.Thread(
+            target=self._bg_update_check, daemon=True).start())
+
+    def _bg_update_check(self):
+        # Never raises: check_for_update swallows every failure and returns
+        # None, since not knowing whether an update exists is not worth
+        # bothering anyone about.
+        tag = check_for_update()
+        if tag:
+            self.root.after(0, self._show_update_available, tag)
+        self.root.after(0, self._schedule_update_check,
+                        UPDATE_CHECK_INTERVAL_HOURS * 3600 * 1000)
+
+    def _show_update_available(self, tag):
+        """Surface the newer release in the status bar. Packed on first
+        discovery only -- re-packing on every subsequent check would shuffle
+        the bar's layout for no reason."""
+        self._update_lbl.configure(text=f"●  {tag} available")
+        if not self._update_lbl.winfo_ismapped():
+            self._update_lbl.pack(side="right", padx=(0, 4))
+            self._bind_tooltip(
+                self._update_lbl,
+                f"A newer release ({tag}) is on GitHub.\nClick to open the download page.")
 
     # ── Check logic ────────────────────────────────────────────────────
 
@@ -681,4 +726,5 @@ class SPTCheckerApp:
     # ── Run ────────────────────────────────────────────────────────────
 
     def run(self):
+        self._schedule_update_check()
         self.root.mainloop()

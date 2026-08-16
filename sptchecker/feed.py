@@ -8,14 +8,15 @@ from collections import deque
 import requests
 
 from .config import (
-    API_MOD_URL, API_MODS_UPDATES_URL, API_URL, DC_NS, FEED_URL, FEED_UPDATED_URL,
-    MODS_UPDATES_CHUNK_SIZE, PUBLISHED_CHUNK_SIZE as _PUBLISHED_CHUNK_SIZE,
+    API_MOD_URL, API_MODS_UPDATES_URL, API_URL, APP_VERSION, DC_NS, FEED_URL,
+    FEED_UPDATED_URL, MODS_UPDATES_CHUNK_SIZE,
+    PUBLISHED_CHUNK_SIZE as _PUBLISHED_CHUNK_SIZE,
 )
 
 _MOD_ID_RE = re.compile(r"/mod/(\d+)/")
 
 _session = requests.Session()
-_session.headers["User-Agent"] = "SPTModChecker/3.3.1"
+_session.headers["User-Agent"] = f"SPTModChecker/{APP_VERSION}"
 
 _API_HEADERS = {"Accept": "application/json"}
 # The RSS routes previously sent no Accept at all, leaving content negotiation

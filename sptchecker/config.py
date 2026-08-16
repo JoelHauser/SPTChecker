@@ -14,6 +14,24 @@ DATA_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "SPTModChecker"
 STATE_FILE = DATA_DIR / "spt_mods_state.json"
 CACHE_DIR = DATA_DIR / "thumb_cache"
 
+# ── Version ────────────────────────────────────────────────────────────
+
+# The runtime source of truth: the User-Agent sent to the Forge and the
+# baseline the self-update check compares releases against. version_info.py
+# and the .spec still carry their own copy, since PyInstaller reads those at
+# build time and can't import this -- keep all three in step when bumping.
+APP_VERSION = "3.3.1"
+
+# Update checking goes to GitHub rather than the Forge deliberately: releases
+# live here, it costs sp-mod.com nothing, and it stays clear of the rate
+# limits the Forge meters us against.
+GITHUB_RELEASES_API = "https://api.github.com/repos/JoelHauser/SPTChecker/releases/latest"
+GITHUB_RELEASES_PAGE = "https://github.com/JoelHauser/SPTChecker/releases/latest"
+# Six-hourly, not per check cycle. A release lands every few weeks at most, so
+# checking with the 15-minute mod poll would spend hundreds of requests a day
+# to learn nothing -- and GitHub allows 60/hour per IP unauthenticated.
+UPDATE_CHECK_INTERVAL_HOURS = 6
+
 # ── Feed ───────────────────────────────────────────────────────────────
 
 FEED_URL = "https://sp-mod.com/mods/rss"

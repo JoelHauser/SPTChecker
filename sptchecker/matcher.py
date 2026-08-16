@@ -5,47 +5,22 @@ from .config import FUZZY_MATCH_THRESHOLD
 from .feed import (
     ForgeRateLimited, lookup_by_guid, lookup_by_name, lookup_by_query, lookup_updates,
 )
+from .utils import is_newer, pad_versions, parse_version
 
 
 def _normalize_name(name):
     return re.sub(r"[^a-z0-9]+", "", name.lower()) if name else ""
 
 
-_VERSION_PART_RE = re.compile(r"\d+")
 
 
-def _parse_version(v):
-    """Dotted version string -> tuple of ints, for numeric comparison.
-    Returns None if it doesn't contain anything version-shaped."""
-    if not v:
-        return None
-    parts = _VERSION_PART_RE.findall(v)
-    return tuple(int(p) for p in parts) if parts else None
-
-
-def _pad_versions(a, b):
-    """Zero-pad the shorter tuple so (1, 0, 2) and (1, 0, 2, 0) -- the same
-    version, just written with a different number of segments -- compare as
-    equal instead of the longer one looking "newer" by tuple length alone."""
-    n = max(len(a), len(b))
-    return a + (0,) * (n - len(a)), b + (0,) * (n - len(b))
-
-
-def _is_newer(available, current):
-    """True only if the Forge version is actually numerically greater than
-    the installed one -- a matched mod's Forge listing can be an older
-    re-upload/fork than what's actually installed (a different, more
-    current upload exists elsewhere), so a plain string inequality check
-    would flag a downgrade as an "update" just because the strings differ.
-    Unparseable versions are treated as no-update rather than guessed at --
-    better to miss a rare oddly-formatted version than wrongly tell someone
-    to "update" to something older.
-    """
-    a, c = _parse_version(available), _parse_version(current)
-    if a is None or c is None:
-        return False
-    a, c = _pad_versions(a, c)
-    return a > c
+# Version comparison lives in utils -- the app's own update check needs the
+# same "is this actually newer" rule this does. Why it matters here: a matched
+# mod's Forge listing can be an older re-upload or fork than what's installed,
+# so a plain string inequality would flag a downgrade as an update.
+_parse_version = parse_version
+_pad_versions = pad_versions
+_is_newer = is_newer
 
 
 def _versions_equal(v1, v2):
