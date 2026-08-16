@@ -4,6 +4,7 @@ import threading
 import time
 import xml.etree.ElementTree as ET
 from collections import deque
+from datetime import datetime, timezone
 
 import requests
 
@@ -12,8 +13,14 @@ from .config import (
     FEED_UPDATED_URL, MODS_UPDATES_CHUNK_SIZE,
     PUBLISHED_CHUNK_SIZE as _PUBLISHED_CHUNK_SIZE,
 )
+from .utils import parse_dt
+
+# Sort fallback for an entry with a missing or unparseable timestamp: sorts to
+# the bottom rather than raising or landing arbitrarily among real dates.
+_OLDEST = datetime.min.replace(tzinfo=timezone.utc)
 
 _MOD_ID_RE = re.compile(r"/mod/(\d+)/")
+_VERSION_V_PREFIX_RE = re.compile(r"^\s*[vV](?=\d)")
 
 _session = requests.Session()
 _session.headers["User-Agent"] = f"SPTModChecker/{APP_VERSION}"
@@ -370,7 +377,13 @@ def _extract_mods(root):
             "title": item.findtext("title", ""),
             "link": link,
             "author": item.findtext(f"{{{DC_NS}}}creator", "Unknown"),
-            "version": item.findtext(f"{{{DC_NS}}}identifier", ""),
+            # RSS writes the version as "v1.2.3" where the API gives "1.2.3",
+            # and cards render whichever they're handed verbatim -- so the two
+            # sources produced visibly different rows for the same field.
+            # Normalise to the API's form, since entries from both now sit in
+            # one list together.
+            "version": _VERSION_V_PREFIX_RE.sub(
+                "", item.findtext(f"{{{DC_NS}}}identifier", "")),
             "category": item.findtext("category", ""),
             "published": pub,
             "updated": item.findtext(f"{{{DC_NS}}}date", pub),
@@ -473,18 +486,43 @@ def fetch_author_id(mod_link):
         return None
 
 
+def _merge_api_first(api_mods, rss_mods):
+    """Merge both sources, keeping the API's copy of any mod carried by both.
+
+    Order matters, and it used to be the other way round. The API holds the
+    real version records, so a mod that has just published a new version shows
+    that new version here first; RSS lags behind it. When the stale RSS copy
+    won this merge, the mod kept its *old* version string and *old* timestamp,
+    which then sorted it back down the list and clean out of the visible
+    window -- so a mod could update and simply never appear under "Recently
+    Updated", which is that column's entire job. Confirmed live: this app's own
+    listing sat 24th showing the previous version, while the API had the new
+    one 2nd.
+
+    RSS is still merged in behind it, because the feed reaches further back
+    than the single page the API fetches and contributes entries that window
+    doesn't cover.
+    """
+    seen = set()
+    merged = []
+    for mod in list(api_mods) + list(rss_mods):
+        if mod["link"] not in seen:
+            seen.add(mod["link"])
+            merged.append(mod)
+    return merged
+
+
 def fetch_feeds():
     """Fetch newest and recently updated mods from RSS feeds + API."""
     api_updated = _fetch_api_mods(sort="-updated_at")
     api_newest = _fetch_api_mods(sort="-created_at")
 
-    # The API is authoritative for both columns; RSS is additive, contributing
-    # entries that fall outside the API's fetched window. When a feed is
-    # unavailable its column falls back to the API set rather than rendering
-    # empty -- "new mods" in particular used to come from RSS alone, so a feed
-    # failure blanked that column even with API results already in hand.
-    newest = _parse_rss(FEED_URL) or api_newest
+    # Either source going missing degrades to the other rather than blanking a
+    # column: a feed failure used to empty "new mods" outright, even with API
+    # results already in hand.
+    rss_newest = _parse_rss(FEED_URL)
     rss_updated = _parse_rss(FEED_UPDATED_URL)
+    newest = _merge_api_first(api_newest, rss_newest)
 
     # RSS entries lack several API-only fields -- build per-link lookups from the
     # API sets and enrich both columns, whichever source each entry came from.
@@ -510,18 +548,19 @@ def fetch_feeds():
         for field in enrich_fields:
             mod[field] = mod.get(field) or lookups[field].get(mod["link"], "")
 
+    combined = _merge_api_first(api_updated, rss_updated)
     for mod in newest:
         _enrich(mod)
-
-    # Combine RSS + API for updated column, deduplicate, sort by version created_at
-    seen = set()
-    combined = []
-    for mod in rss_updated + api_updated:
-        if mod["link"] not in seen:
-            seen.add(mod["link"])
-            combined.append(mod)
     for mod in combined:
         _enrich(mod)
-    combined.sort(key=lambda m: m.get("updated", ""), reverse=True)
+
+    # Sorted on parsed datetimes, not raw strings. The two sources spell the
+    # same instant differently ("...T15:22:08.000000Z" against
+    # "...T13:31:41+00:00"), and RSS dates entries that predate the API window
+    # in RFC 2822 -- string ordering across those is meaningless, and entries
+    # from both now share one list. Enrichment runs first, since it replaces
+    # RSS's publish time with the API's more accurate one.
+    newest.sort(key=lambda m: parse_dt(m.get("published")) or _OLDEST, reverse=True)
+    combined.sort(key=lambda m: parse_dt(m.get("updated")) or _OLDEST, reverse=True)
 
     return newest, combined

@@ -4,3 +4,7 @@ data/
 build/
 modreader/bin/
 modreader/obj/
+# Release binaries are published to the Forge and GitHub Releases, so keeping
+# them here too only inflated the repo -- every rebuild committed another ~60MB
+# copy that nothing ever read back out of git.
+dist/
