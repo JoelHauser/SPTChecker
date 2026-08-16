@@ -144,11 +144,6 @@ class SPTCheckerApp:
         flat_button(hdr, "Stats", self._show_stats).pack(side="left", padx=(6, 0))
         flat_button(hdr, "Local Mods", self._show_local_scan).pack(side="left", padx=(6, 0))
 
-        # TEST BUTTON -- toggles the update indicator so its look can be
-        # checked without waiting for a real release. Remove before shipping,
-        # along with _preview_update_dot.
-        flat_button(hdr, "Test Dot", self._preview_update_dot).pack(side="left", padx=(6, 0))
-
         self._btn = flat_button(hdr, "Check Now", self._check_now)
         self._btn.pack(side="right")
         self._tooltip_id = None
@@ -482,17 +477,6 @@ class SPTCheckerApp:
             self._bind_tooltip(
                 self._update_lbl,
                 f"SPTChecker v{version} is on the Forge.\nClick to open its page.")
-
-    def _preview_update_dot(self):
-        """Temporary: force the indicator on so its appearance can be checked
-        without waiting for a real release. Remove this and its button before
-        shipping -- see the TEST BUTTON marker in the header."""
-        if self._update_lbl.winfo_ismapped():
-            self._update_lbl.pack_forget()
-            self._lbl_status.configure(text="Update indicator hidden (preview)")
-        else:
-            self._show_update_available("9.9.9")
-            self._lbl_status.configure(text="Update indicator shown (preview)")
 
     # ── Check logic ────────────────────────────────────────────────────
 
