@@ -1,5 +1,7 @@
 import hashlib
 import json
+import os
+import threading
 import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
@@ -72,20 +74,84 @@ def _migrate_state_hosts(state):
     return changed
 
 
+def _salvage_state(raw):
+    """Recover what's usable from a state file that won't parse, or None.
+
+    The corruption this exists for is two overlapping writes, which leave a
+    complete JSON document with the tail of a longer one stuck on the end
+    ("Extra data: line 1 column N"). That leading document is a real
+    snapshot, so decoding just the prefix hands the user their whole tracked
+    history back rather than resetting them to nothing.
+    """
+    try:
+        salvaged, _end = json.JSONDecoder().raw_decode(raw)
+    except ValueError:
+        return None
+    return salvaged if isinstance(salvaged, dict) else None
+
+
+def _quarantine_state_file():
+    """Set an unparseable state file aside instead of deleting it -- it's the
+    only copy of that history, and keeping one makes the failure diagnosable
+    if it ever recurs. A fixed name, so repeated failures can't pile up."""
+    try:
+        os.replace(STATE_FILE, STATE_FILE.with_name(STATE_FILE.stem + ".corrupt.json"))
+    except OSError:
+        pass
+
+
 def load_state():
-    if STATE_FILE.exists():
-        state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-        if _migrate_state_hosts(state):
-            # Persist right away so the rewrite is a one-time cost that
-            # survives even if the app is closed before its first check.
-            save_state(state)
-        return state
-    return {"mods": {}}
+    if not STATE_FILE.exists():
+        return {"mods": {}}
+    try:
+        raw = STATE_FILE.read_text(encoding="utf-8")
+    except OSError:
+        return {"mods": {}}
+
+    try:
+        state = json.loads(raw)
+    except ValueError:
+        # A malformed state file used to raise straight out of here, which
+        # happens during __init__ before any window exists -- so the app died
+        # on launch with a raw traceback, and since state lives under
+        # LOCALAPPDATA rather than next to the exe, reinstalling didn't help.
+        # Recover instead. Starting clean is safe when nothing is salvageable:
+        # an empty history reads as a first run, which notifies about nothing.
+        state = _salvage_state(raw)
+        _quarantine_state_file()
+        if state is None:
+            return {"mods": {}}
+        save_state(state)
+
+    if not isinstance(state, dict):
+        return {"mods": {}}
+    if _migrate_state_hosts(state):
+        # Persist right away so the rewrite is a one-time cost that
+        # survives even if the app is closed before its first check.
+        save_state(state)
+    return state
+
+
+# The periodic check, the local scan and the main thread all persist state,
+# from three different threads. Path.write_text truncates before it writes and
+# holds no lock, so two overlapping writers left one complete document with the
+# tail of a longer one after it -- a file that then refused to parse and took
+# the whole app down on next launch.
+_save_lock = threading.Lock()
 
 
 def save_state(state):
     DATA_DIR.mkdir(exist_ok=True)
-    STATE_FILE.write_text(json.dumps(state, separators=(",", ":")), encoding="utf-8")
+    payload = json.dumps(state, separators=(",", ":"))
+    with _save_lock:
+        # Write alongside the target, then rename: os.replace is atomic, so an
+        # interrupted write (crash, power cut, or the app being killed) leaves
+        # the previous state whole instead of a half-written file. The temp
+        # file sits in the same directory deliberately -- os.replace is only
+        # atomic within a single filesystem.
+        tmp = STATE_FILE.with_name(STATE_FILE.stem + ".tmp")
+        tmp.write_text(payload, encoding="utf-8")
+        os.replace(tmp, STATE_FILE)
 
 
 # Bumped when the rendering below changes, so caches written by an older
