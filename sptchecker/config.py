@@ -20,7 +20,7 @@ CACHE_DIR = DATA_DIR / "thumb_cache"
 # baseline the self-update check compares releases against. version_info.py
 # and the .spec still carry their own copy, since PyInstaller reads those at
 # build time and can't import this -- keep all three in step when bumping.
-APP_VERSION = "3.3.2"
+APP_VERSION = "3.3.3"
 
 # This app's own listing on the Forge -- where users actually download it, so
 # it's the version that matters for "am I out of date". Checked through the
