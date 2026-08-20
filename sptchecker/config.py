@@ -82,8 +82,23 @@ TREND_WINDOW_DAYS = 30
 
 # ── Local mod scan (opt-in) ──────────────────────────────────────────────
 
+# Client plugins sit at the game root in every version -- deliberately *not*
+# inside the server folder. SPT 4.1's own mod manager had to fix exactly that
+# mistake: plugins placed under SPT_Runtime/BepInEx/plugins are somewhere the
+# game never looks.
 BEPINEX_PLUGINS_SUBPATH = "BepInEx/plugins"
-SERVER_MODS_SUBPATH = "SPT/user/mods"
+# SPT 4.1 renamed the server folder from "SPT" to "SPT_Runtime", so a 4.1
+# install has its server mods somewhere 4.0's layout doesn't describe. Both are
+# checked, newest naming first, since a machine can hold either -- and one
+# upgraded in place can still have the old folder sitting alongside the new.
+SERVER_DIR_NAMES = ("SPT_Runtime", "SPT")
+SERVER_MODS_RELATIVE = "user/mods"
+SERVER_MODS_SUBPATHS = tuple(f"{d}/{SERVER_MODS_RELATIVE}" for d in SERVER_DIR_NAMES)
+# Pre-v4 installs kept server mods at the game root. Note a stray root-level
+# user/mods is *also* the fingerprint of the 4.1 mod-manager bug, where mods
+# were written to a folder the game never reads -- so this is matched only on
+# the old package.json manifest shape, never on v4-style DLLs, to avoid
+# reporting mods that are installed but dead.
 LEGACY_SERVER_MODS_SUBPATH = "user/mods"
 FUZZY_MATCH_THRESHOLD = 0.82
 # Every SPT install ships with its own core components (SPT.Common,
@@ -99,7 +114,8 @@ MODREADER_TIMEOUT_SECONDS = 120
 # Used to read the installed SPT server version straight from the exe's own
 # Windows version resource -- the only reliable source, since it's not
 # recorded in any plain-text config file on disk.
-SPT_SERVER_EXE_SUBPATH = "SPT/SPT.Server.exe"
+SPT_SERVER_EXE_NAME = "SPT.Server.exe"
+SPT_SERVER_EXE_SUBPATHS = tuple(f"{d}/{SPT_SERVER_EXE_NAME}" for d in SERVER_DIR_NAMES)
 # GET /api/v0/mods/updates takes a comma-separated `mods` list with no
 # documented cap -- chunk defensively so a large install never risks the
 # request line getting rejected/truncated by a proxy or server limit.
