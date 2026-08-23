@@ -63,6 +63,10 @@ Click **Local Mods** to check your own installed mods against the Forge — enti
 4. Every match is then confirmed against the Forge's own update service, using **your actual installed SPT version** (read directly from `SPT.Server.exe`). This catches things a plain version comparison can't:
    - A newer release that isn't compatible with your SPT build is **not** offered as an update
    - A newer release blocked by another mod's dependency requirements is **not** offered as an update
+
+   You can override that version in the **SPT version** box. Leave it blank to keep using whatever's detected. Two reasons to set it:
+   - **Client-only installs** have no `SPT.Server.exe` to read, so nothing could be detected and this whole confirmation step was silently skipped. Setting the version here turns it back on.
+   - **Planning an upgrade** — point it at a version you haven't installed yet (e.g. `4.1.0` while still on `4.0`) and the scan reports your mods as they'd stand on *that* build, so you can see what's ready before you commit to upgrading.
 5. Mods that ship both a client-side plugin and a separate server-side file (common for larger mods) are recognized as one logical mod and shown as a single result, not two duplicate entries. If the two halves are at different versions, both are labelled (e.g. `client 1.4.0, server 1.5.0`).
 6. A toast notification fires if any installed mods have updates available.
 7. Your folder path and last scan results are remembered across restarts and shown again next time you open **Local Mods** — but a scan only ever runs when you click **Scan Now**. It never runs automatically, on startup or otherwise.

@@ -15,7 +15,7 @@ from .config import (
     TREND_WINDOW_DAYS,
 )
 from .feed import fetch_author_id
-from .localmods import validate_spt_root
+from .localmods import detect_spt_version, normalize_spt_version, validate_spt_root
 from .state import placeholder_thumb
 from .utils import parse_dt
 
@@ -622,7 +622,8 @@ def _local_scan_placeholder():
 
 class LocalScanSettingsWindow(FramelessPopup):
     """Popup for the opt-in local-install scan: enable/disable, pick the SPT
-    folder, trigger a scan, and show matched/unmatched results.
+    folder, set which SPT version to judge mods against, trigger a scan, and
+    show matched/unmatched results.
 
     Kept dumb by design, matching how the rest of this app's popups work --
     it owns no scan/network logic itself, only widgets + callbacks. The app
@@ -631,15 +632,23 @@ class LocalScanSettingsWindow(FramelessPopup):
     set_error applies once it's done.
     """
 
-    WIDTH, HEIGHT = 440, 560
+    # Taller than the content strictly needs so the results list keeps a
+    # usable amount of room under the settings rows above it.
+    WIDTH, HEIGHT = 440, 610
 
-    def __init__(self, parent, enabled, spt_path, on_toggle, on_path_change, on_scan_now):
+    def __init__(self, parent, enabled, spt_path, spt_version_override,
+                 on_toggle, on_path_change, on_version_change, on_scan_now):
         super().__init__(parent, "Local Mod Scan")
         self._on_toggle = on_toggle
         self._on_path_change = on_path_change
+        self._on_version_change = on_version_change
         self._on_scan_now = on_scan_now
         self._spt_path = spt_path
         self._photos = []
+        # (path, version) -- detection reads a file, and the hint below is
+        # refreshed on every keystroke. Keyed by path rather than computed
+        # once, since Browse can repoint this window at another install.
+        self._detected_cache = (None, None)
 
         self._enabled_var = tk.BooleanVar(value=enabled)
         tk.Checkbutton(
@@ -661,7 +670,28 @@ class LocalScanSettingsWindow(FramelessPopup):
         self._path_lbl.pack(side="left", fill="x", expand=True)
 
         self._validation_lbl = tk.Label(self, text="", font=("Segoe UI", 8), bg=BG, anchor="w")
-        self._validation_lbl.pack(fill="x", padx=14, pady=(2, 10))
+        self._validation_lbl.pack(fill="x", padx=14, pady=(2, 8))
+
+        version_row = tk.Frame(self, bg=BG)
+        version_row.pack(fill="x", padx=14)
+        tk.Label(version_row, text="SPT version", font=("Segoe UI", 8),
+                 fg=TEXT_DIM, bg=BG).pack(side="left")
+        self._version_var = tk.StringVar(value=spt_version_override or "")
+        self._version_entry = tk.Entry(
+            version_row, textvariable=self._version_var, font=("Segoe UI", 8), width=10,
+            bg=CARD_BG, fg=TEXT_BRIGHT, insertbackground=TEXT_BRIGHT, relief="flat",
+            highlightthickness=1, highlightbackground=SEPARATOR, highlightcolor=TEXT_DIM)
+        self._version_entry.pack(side="left", padx=(8, 0), ipady=2)
+        # The hint tracks every keystroke, but the value is only handed back on
+        # Return/focus-out (and before a scan) -- committing per keystroke would
+        # persist half-typed versions like "4." to disk on the way to "4.1".
+        self._version_entry.bind("<KeyRelease>", lambda _e: self._update_version_hint())
+        self._version_entry.bind("<Return>", lambda _e: self._commit_version())
+        self._version_entry.bind("<FocusOut>", lambda _e: self._commit_version())
+
+        self._version_lbl = tk.Label(self, text="", font=("Segoe UI", 8), bg=BG, anchor="w",
+                                     wraplength=self.WIDTH - 28, justify="left")
+        self._version_lbl.pack(fill="x", padx=14, pady=(3, 10))
 
         self._scan_btn = flat_button(self, "Scan Now", self._scan_now,
                                      font_size=9, fg=TEXT_BRIGHT, padx=10, pady=4)
@@ -687,6 +717,7 @@ class LocalScanSettingsWindow(FramelessPopup):
         self._results_frame = self.make_scroll_area(container)
 
         self._update_validation()
+        self._update_version_hint()
         self._set_message("Click Scan Now to check your installed mods against the Forge.")
         self.resurface()
 
@@ -721,6 +752,9 @@ class LocalScanSettingsWindow(FramelessPopup):
         self._path_lbl.configure(text=self._display_path())
         self._on_path_change(chosen)
         self._update_validation()
+        # A different install can be a different SPT build -- the hint is
+        # showing the old one until this runs.
+        self._update_version_hint()
 
     def _update_validation(self):
         if not self._spt_path:
@@ -735,7 +769,44 @@ class LocalScanSettingsWindow(FramelessPopup):
             valid = False
         self._scan_btn.configure(state="normal" if (valid and self._enabled_var.get()) else "disabled")
 
+    def _detected_version(self):
+        path, version = self._detected_cache
+        if path != self._spt_path:
+            version = detect_spt_version(self._spt_path) if self._spt_path else None
+            self._detected_cache = (self._spt_path, version)
+        return version
+
+    def _update_version_hint(self):
+        """Say which SPT build the next scan will actually be judged against.
+
+        Every branch names a concrete outcome rather than just flagging the
+        field good or bad: this box silently decides whether mods are reported
+        as compatible, and an empty one is a perfectly normal state meaning
+        "use what's installed", not an unfilled form.
+        """
+        typed = self._version_var.get().strip()
+        normalized = normalize_spt_version(typed)
+        detected = self._detected_version()
+        if typed and not normalized:
+            hint, color = "⚠ Not a version number — try something like 4.1.0", ACCENT_UPD
+        elif normalized:
+            hint, color = f"Checking against SPT {normalized}", ACCENT_NEW
+        elif detected:
+            hint, color = f"Auto-detected SPT {detected} — leave blank to keep using it", TEXT_DIM
+        else:
+            hint, color = ("⚠ Couldn't detect your SPT version — set one here so updates "
+                           "can be checked properly", ACCENT_UPD)
+        self._version_lbl.configure(text=hint, fg=color)
+
+    def _commit_version(self):
+        self._on_version_change(self._version_var.get().strip())
+        self._update_version_hint()
+
     def _scan_now(self):
+        # Clicking straight from the entry to this button doesn't reliably fire
+        # FocusOut on every platform, so a version typed and immediately
+        # scanned would otherwise be dropped.
+        self._commit_version()
         self.set_scanning()
         self._on_scan_now()
 

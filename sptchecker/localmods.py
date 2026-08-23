@@ -1,5 +1,6 @@
 import ctypes
 import json
+import re
 import subprocess
 from ctypes import wintypes
 from pathlib import Path
@@ -71,6 +72,54 @@ def detect_spt_version(spt_root):
         return f"{major}.{minor}.{build}"
     except OSError:
         return None
+
+
+# The Forge takes an SPT build as major.minor.patch wherever it judges
+# compatibility -- both /mods/updates and filter[spt_version] -- so a
+# hand-typed "4.1" has to be padded out rather than sent as it was written.
+# Major and minor are both required: a bare "4" reads as "any 4.x" to a person
+# but would have to be guessed into one exact build here, and guessing wrong
+# is indistinguishable from the user having asked for it.
+_SPT_VERSION_RE = re.compile(r"^[vV]?(\d{1,3})\.(\d{1,3})(?:\.(\d{1,4}))?$")
+
+
+def normalize_spt_version(text):
+    """Normalize a hand-typed SPT version to the form the Forge expects, or
+    None if it isn't one.
+
+    Lenient about how people actually write a version -- "4.1", " 4.1.0 ",
+    "v4.1" are all the same build -- but strict about what comes out, because
+    the result is sent verbatim to the Forge as the build to judge every
+    installed mod against. Anything unparseable returns None rather than a
+    best guess, so the caller can fall back to detection instead of asking
+    about a version that doesn't exist.
+    """
+    if not text:
+        return None
+    match = _SPT_VERSION_RE.match(str(text).strip())
+    if not match:
+        return None
+    major, minor, patch = match.groups()
+    return f"{int(major)}.{int(minor)}.{int(patch or 0)}"
+
+
+def resolve_spt_version(spt_root, override=None):
+    """The SPT version a scan should be judged against: the user's explicit
+    choice where they've set one, otherwise whatever is installed.
+
+    An override deliberately outranks detection. It's the only answer at all
+    for a client-only install, where detect_spt_version finds no
+    SPT.Server.exe to read and returns None -- which silently switched off
+    Forge's authoritative update check entirely, leaving every verdict to the
+    weaker local version comparison with nothing on screen to say so. It also
+    lets someone ask the question they actually have -- "is my setup ready for
+    4.1 yet?" -- instead of only the one their current install can answer.
+
+    An unparseable override falls through to detection rather than being
+    passed on: the Forge takes the build string at face value, so a nonsense
+    one comes back judging every mod incompatible.
+    """
+    return normalize_spt_version(override) or detect_spt_version(spt_root)
 
 
 def _run_modreader(spt_root, client_dlls, server_dlls):

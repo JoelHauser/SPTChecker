@@ -18,7 +18,7 @@ from .config import (
     WINDOW_DEFAULT_GEOMETRY, WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH,
 )
 from .feed import ForgeBlocked, fetch_feeds, unpublished_links
-from .localmods import detect_spt_version, scan_installed_mods
+from .localmods import resolve_spt_version, scan_installed_mods
 from .matcher import match_local_mods
 from .platform import (
     badge_icon, disable_show_animation, is_startup_enabled, load_app_icon,
@@ -308,8 +308,10 @@ class SPTCheckerApp:
             self.root,
             enabled=self.state.get("local_scan_enabled", False),
             spt_path=self.state.get("spt_install_path", ""),
+            spt_version_override=self.state.get("spt_version_override", ""),
             on_toggle=self._toggle_local_scan,
             on_path_change=self._set_local_scan_path,
+            on_version_change=self._set_spt_version_override,
             on_scan_now=self._scan_local_now,
         )
         if self._scanning:
@@ -329,6 +331,13 @@ class SPTCheckerApp:
         self.state["spt_install_path"] = path
         save_state(self.state)
 
+    def _set_spt_version_override(self, version):
+        # Stored as the user typed it, not normalized: this is the field's own
+        # contents, and rewriting it under them mid-edit is worse than keeping
+        # a value resolve_spt_version already knows to ignore.
+        self.state["spt_version_override"] = version
+        save_state(self.state)
+
     def _scan_local_now(self):
         if self._scanning:
             return
@@ -341,7 +350,8 @@ class SPTCheckerApp:
             local_mods = scan_installed_mods(spt_path)
             results = match_local_mods(
                 local_mods,
-                spt_version=detect_spt_version(spt_path),
+                spt_version=resolve_spt_version(
+                    spt_path, self.state.get("spt_version_override")),
                 on_progress=lambda done, total: self.root.after(
                     0, self._update_scan_progress, done, total),
             )
