@@ -513,6 +513,16 @@ class RoundedPanel(tk.Canvas):
                                       width=0, tags="panelbg")
         self.tag_lower("panelbg")
         self.itemconfigure(self._body_id, width=max(1, w - self._padx * 2))
+        if self._fixed_h:
+            # A panel whose height comes from its geometry manager has to push
+            # that height onto the embedded frame too. Without it the frame
+            # keeps its own requested size -- for a tk.Text that is a default
+            # 24 lines, taller than the panel -- and the overflow is silently
+            # clipped by the canvas. The Text then believes it fits, so it
+            # never becomes scrollable and the hidden lines are unreachable.
+            # Auto-height panels are excluded: there the canvas takes its
+            # height from the frame, and forcing it back would be a loop.
+            self.itemconfigure(self._body_id, height=max(1, h - self._pady * 2))
 
 
 def chip(parent, text, color, surface=CARD_BG, font_size=7, weight="bold",
