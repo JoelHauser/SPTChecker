@@ -282,9 +282,11 @@ class PillButton(tk.Canvas):
         self._hover = False
         self._padx, self._pady = padx, pady
         self._photo = None
+        self._pressed = False
         self._resize()
         self.bind("<Enter>", self._on_enter)
         self.bind("<Leave>", self._on_leave)
+        self.bind("<Button-1>", self._on_press)
         self.bind("<ButtonRelease-1>", self._on_release)
 
     def _colors(self):
@@ -327,8 +329,21 @@ class PillButton(tk.Canvas):
         self._hover = False
         self._redraw()
 
+    def _on_press(self, _e):
+        self._pressed = self._state != "disabled"
+
     def _on_release(self, e):
-        if self._state == "disabled" or not self._command:
+        """Fire only on a release that follows a press on this button.
+
+        The press half matters: when a window is destroyed on mouse-down, the
+        implicit pointer grab dies with it and the OS delivers the release to
+        whatever is underneath. A button that acted on any release it received
+        would then activate itself from a click aimed at the window that just
+        closed -- which is exactly what happened when a popup's close button
+        happened to sit over one.
+        """
+        was_pressed, self._pressed = self._pressed, False
+        if not was_pressed or self._state == "disabled" or not self._command:
             return
         if 0 <= e.x <= self._box_w and 0 <= e.y <= self._box_h:
             self._command()

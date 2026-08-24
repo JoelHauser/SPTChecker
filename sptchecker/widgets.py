@@ -325,7 +325,12 @@ class FramelessPopup(tk.Toplevel):
         close_btn.pack(side="right", fill="y")
         close_btn.bind("<Enter>", lambda _e: close_btn.configure(bg=ACCENT_DANGER, fg="#ffffff"))
         close_btn.bind("<Leave>", lambda _e: close_btn.configure(bg=STATUS_BG, fg=TEXT_DIM))
-        close_btn.bind("<Button-1>", lambda _e: self.destroy())
+        # Closes on release, not on press. Destroying the window under the
+        # pointer on mouse-down drops the implicit grab, and the release then
+        # lands on whatever the popup was covering -- with these popups centred
+        # over the window, that is usually one of the header buttons. Waiting
+        # for the release keeps both halves of the click inside this window.
+        close_btn.bind("<ButtonRelease-1>", self._close_from_release)
 
         tk.Frame(shell, bg=SEPARATOR, height=1).pack(fill="x")
 
@@ -335,6 +340,13 @@ class FramelessPopup(tk.Toplevel):
 
         self.bind("<Escape>", lambda _e: self.destroy())
         self.bind("<Alt-F4>", lambda _e: self.destroy())
+
+    def _close_from_release(self, e):
+        """Close only if the pointer is still on the close button, so pressing
+        it and sliding off cancels the way any other button does."""
+        w = e.widget
+        if 0 <= e.x < w.winfo_width() and 0 <= e.y < w.winfo_height():
+            self.destroy()
 
     def _position_over(self, parent):
         parent.update_idletasks()
