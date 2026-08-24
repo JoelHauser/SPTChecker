@@ -6,16 +6,17 @@ import webbrowser
 from datetime import datetime
 
 import pystray
-from PIL import Image, ImageDraw, ImageTk
+from PIL import Image, ImageTk
 
 from .config import (
-    ACCENT_NEW, ACCENT_UPD, BG, CARD_BG,
+    ACCENT_DANGER, ACCENT_NEW, ACCENT_UPD, APP_VERSION, BG, BORDER, CARD_BG,
     CATEGORY_COLOR_DEFAULT, CATEGORY_COLORS,
     CHECK_INTERVAL_MINUTES,
-    DISPLAY_FIELDS, FORGE_MOD_PAGE, FORGE_URL, MAX_PER_CATEGORY,
-    SEPARATOR, STATE_FIELDS, STATUS_BG, TEXT, TEXT_BRIGHT, TEXT_DIM,
+    DISPLAY_FIELDS, FORGE_MOD_PAGE, FORGE_URL, LAYOUT_VERSION, MAX_PER_CATEGORY,
+    SEPARATOR, STATE_FIELDS, STATUS_BG, TEXT, TEXT_BRIGHT, TEXT_DIM, TEXT_FAINT,
     UPDATE_CHECK_INTERVAL_HOURS,
-    WINDOW_DEFAULT_GEOMETRY, WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH,
+    WINDOW_DEFAULT_GEOMETRY, WINDOW_DEFAULT_WIDTH, WINDOW_MIN_HEIGHT,
+    WINDOW_MIN_WIDTH,
 )
 from .feed import ForgeBlocked, fetch_feeds, unpublished_links
 from .localmods import detect_spt_version, scan_installed_mods
@@ -28,37 +29,21 @@ from .platform import (
 from .state import (
     compute_stats, download_thumb, load_state, placeholder_thumb, purge_old_thumbs, save_state,
 )
+from .theme import (
+    ToggleSwitch, chip, dot, flat_button, font, info_glyph, ring, rounded_photo,
+)
 from .update import check_for_update
-from .widgets import LocalScanSettingsWindow, ModCard, StatsWindow, flat_button
+from .widgets import (
+    CARD_GAP, LocalScanSettingsWindow, ModCard, StatsWindow, build_scroll_area,
+    card_pitch,
+)
 
-_ICON_SUPERSAMPLE = 4
-
-
-def _render_info_icon(color, size=16):
-    """Render a small 'i' info icon via PIL + LANCZOS downscale for real anti-aliasing
-    -- Tk Canvas primitives (create_oval/create_line) aren't anti-aliased on Windows
-    and look jagged/pixelated at these small sizes, independent of display scaling."""
-    big = size * _ICON_SUPERSAMPLE
-    img = Image.new("RGBA", (big, big), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    pad = _ICON_SUPERSAMPLE
-    draw.ellipse([pad, pad, big - pad, big - pad], outline=color, width=_ICON_SUPERSAMPLE)
-    cx = big // 2
-    dot_r = _ICON_SUPERSAMPLE * 1.1
-    dot_cy = big * 0.28
-    draw.ellipse([cx - dot_r, dot_cy - dot_r, cx + dot_r, dot_cy + dot_r], fill=color)
-    draw.line([cx, big * 0.45, cx, big * 0.74], fill=color, width=int(_ICON_SUPERSAMPLE * 1.3))
-    img = img.resize((size, size), Image.LANCZOS)
-    return ImageTk.PhotoImage(img)
-
-
-def _render_dot(color, size=10):
-    """Render a small filled circle via PIL + LANCZOS downscale (see _render_info_icon)."""
-    big = size * _ICON_SUPERSAMPLE
-    img = Image.new("RGBA", (big, big), (0, 0, 0, 0))
-    ImageDraw.Draw(img).ellipse([0, 0, big - 1, big - 1], fill=color)
-    img = img.resize((size, size), Image.LANCZOS)
-    return ImageTk.PhotoImage(img)
+# Layout constants shared between the widgets that use them and _size_to_fit,
+# which has to reproduce the same spacing to work out how tall the window needs
+# to be for a full column.
+BODY_PAD_X = 14
+BODY_PAD_TOP = 12
+COL_HEADER_GAP = 8
 
 
 class SPTCheckerApp:
@@ -70,7 +55,8 @@ class SPTCheckerApp:
         self.root = tk.Tk()
         self.root.title("SPTChecker")
         self.root.configure(bg=BG)
-        self.root.geometry(self._load_geometry())
+        saved_geometry = self._load_geometry()
+        self.root.geometry(saved_geometry or WINDOW_DEFAULT_GEOMETRY)
         self.root.minsize(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
 
         set_dark_title_bar(self.root, show=not start_hidden)
@@ -99,6 +85,14 @@ class SPTCheckerApp:
             pass
 
         self._build_ui()
+        # Applied on every launch, not just the first: the header's real
+        # requirement depends on the display scaling of whichever machine this
+        # is running on now, which a size saved elsewhere knows nothing about.
+        self.root.minsize(self._min_width(), WINDOW_MIN_HEIGHT)
+        if not saved_geometry:
+            # Only on a first launch (or the first after a layout change):
+            # a size the user chose themselves is never overridden.
+            self._size_to_fit()
         self._setup_tray()
 
         self.root.protocol("WM_DELETE_WINDOW", self._hide_to_tray)
@@ -111,13 +105,61 @@ class SPTCheckerApp:
     # ── Window geometry ─────────────────────────────────────────────────
 
     def _load_geometry(self):
-        geometry = self.state.get("window_geometry", "")
-        m = re.fullmatch(r"(\d+)x(\d+)", geometry)
+        """The saved window size, or None when there isn't a usable one.
+
+        A geometry saved under a different LAYOUT_VERSION is discarded: it was
+        chosen to fit cards of a different height, and restoring it is exactly
+        what would leave a returning user looking at a window that scrolls on
+        the first launch after an update. They get one re-fit, then their own
+        sizing is respected again.
+        """
+        if self.state.get("layout_version") != LAYOUT_VERSION:
+            return None
+        m = re.fullmatch(r"(\d+)x(\d+)", self.state.get("window_geometry", ""))
         if not m:
-            return WINDOW_DEFAULT_GEOMETRY
+            return None
         w = max(WINDOW_MIN_WIDTH, int(m.group(1)))
         h = max(WINDOW_MIN_HEIGHT, int(m.group(2)))
         return f"{w}x{h}"
+
+    def _min_width(self):
+        """Narrowest the window can be before the header controls collide.
+
+        Measured rather than fixed: the header is laid out by its fonts, so it
+        needs 596px at 100% display scaling and 746px at 200% -- a constant
+        that looks generous on one machine clips the buttons on another.
+        """
+        self.root.update_idletasks()
+        return max(WINDOW_MIN_WIDTH, self._header_bar.winfo_reqwidth() + 8)
+
+    def _size_to_fit(self):
+        """Size the window so a full column of cards fits without scrolling.
+
+        Height is measured from the real widgets rather than assumed from
+        constants: the header, the column headings and the status bar are all
+        sized by their fonts, so their heights change with the Windows display
+        scaling setting. A hardcoded default that fits seven cards at 100%
+        clips them at 125%, which is the more common setting on laptops.
+
+        Width stays deliberately tight -- the two columns are the content, and
+        extra width past the point where titles stop being ellipsized just
+        stretches the cards.
+        """
+        chrome = (self._header_bar.winfo_reqheight()
+                  + self._status_bar.winfo_reqheight()
+                  + self._col_header.winfo_reqheight() + COL_HEADER_GAP
+                  + BODY_PAD_TOP)
+        wanted_h = chrome + MAX_PER_CATEGORY * card_pitch(self.root)
+        # Not winfo_width(): with --background the window is never deiconified,
+        # and an unmapped window reports a width of 1.
+        wanted_w = max(WINDOW_DEFAULT_WIDTH, self._min_width())
+
+        # Never open larger than the display. If the screen genuinely cannot
+        # show every card the columns scroll, which is what that fallback is
+        # there for -- but nothing is gained by opening off the bottom edge.
+        max_h = int(self.root.winfo_screenheight() * 0.90)
+        max_w = int(self.root.winfo_screenwidth() * 0.95)
+        self.root.geometry(f"{min(wanted_w, max_w)}x{min(wanted_h, max_h)}")
 
     def _save_geometry(self):
         if not self._visible:
@@ -126,101 +168,181 @@ class SPTCheckerApp:
         h = self.root.winfo_height()
         if w > 1 and h > 1:
             self.state["window_geometry"] = f"{w}x{h}"
+            self.state["layout_version"] = LAYOUT_VERSION
             save_state(self.state)
 
     # ── UI construction ────────────────────────────────────────────────
 
     def _build_ui(self):
-        hdr = tk.Frame(self.root, bg=BG, pady=4)
-        hdr.pack(fill="x", padx=12)
+        self._build_header()
+        self._build_body()
+        self._build_status_bar()
 
-        self._legend_icon_dim = _render_info_icon(TEXT_DIM)
-        self._legend_icon_bright = _render_info_icon(TEXT_BRIGHT)
-        self._legend_icon = tk.Label(hdr, image=self._legend_icon_dim, bg=BG, cursor="hand2")
-        self._legend_icon.pack(side="left")
-        self._legend_icon.bind("<Enter>", self._legend_enter)
-        self._legend_icon.bind("<Leave>", self._legend_leave)
+    # -- Header ---------------------------------------------------------
 
-        flat_button(hdr, "Stats", self._show_stats).pack(side="left", padx=(6, 0))
-        flat_button(hdr, "Local Mods", self._show_local_scan).pack(side="left", padx=(6, 0))
+    def _build_header(self):
+        """A full-width app bar in the chrome color rather than a strip of
+        loose controls floating on the window background: it gives the window
+        a top edge, and it is what separates the app's own controls from the
+        mod list they act on."""
+        bar = self._header_bar = tk.Frame(self.root, bg=STATUS_BG)
+        bar.pack(fill="x", side="top")
+        hdr = tk.Frame(bar, bg=STATUS_BG, pady=9)
+        hdr.pack(fill="x", padx=14)
+        tk.Frame(bar, bg=SEPARATOR, height=1).pack(fill="x")
 
-        self._btn = flat_button(hdr, "Check Now", self._check_now)
+        brand_icon = ImageTk.PhotoImage(
+            rounded_photo(self._app_icon.resize((22, 22), Image.LANCZOS), radius=5))
+        self._brand_icon = brand_icon
+        tk.Label(hdr, image=brand_icon, bg=STATUS_BG).pack(side="left")
+        tk.Label(hdr, text="SPTChecker", font=font(11, "bold"), fg=TEXT_BRIGHT,
+                 bg=STATUS_BG).pack(side="left", padx=(9, 0))
+        tk.Label(hdr, text=f"v{APP_VERSION}", font=font(8), fg=TEXT_FAINT,
+                 bg=STATUS_BG).pack(side="left", padx=(7, 0), pady=(3, 0))
+
+        # Packed right to left, so the primary action anchors the far corner.
+        self._btn = flat_button(hdr, "Check Now", self._check_now, accent=ACCENT_NEW,
+                                bg=STATUS_BG, padx=14, pady=5)
         self._btn.pack(side="right")
         self._tooltip_id = None
         self._tooltip_win = None
         self._bind_tooltip(self._btn, "Check the Forge for new or updated mods")
 
-        chk = tk.Checkbutton(
-            hdr, text="Run on Startup", font=("Segoe UI", 8),
-            fg=TEXT_DIM, bg=BG, selectcolor=CARD_BG,
-            activebackground=BG, activeforeground=TEXT,
-            variable=self._startup_var, command=self._toggle_startup,
-        )
-        chk.pack(side="right", padx=(0, 10))
+        flat_button(hdr, "Local Mods", self._show_local_scan,
+                    bg=STATUS_BG).pack(side="right", padx=(0, 8))
+        flat_button(hdr, "Stats", self._show_stats,
+                    bg=STATUS_BG).pack(side="right", padx=(0, 8))
 
+        ToggleSwitch(hdr, "Run on startup", self._startup_var,
+                     command=self._toggle_startup, font_size=8,
+                     bg=STATUS_BG).pack(side="right", padx=(0, 16))
+
+        self._legend_icon_dim = info_glyph(15, TEXT_FAINT)
+        self._legend_icon_bright = info_glyph(15, TEXT_BRIGHT)
+        self._legend_icon = tk.Label(hdr, image=self._legend_icon_dim, bg=STATUS_BG,
+                                     cursor="hand2")
+        self._legend_icon.pack(side="right", padx=(0, 16))
+        self._legend_icon.bind("<Enter>", self._legend_enter)
+        self._legend_icon.bind("<Leave>", self._legend_leave)
+
+    # -- Columns --------------------------------------------------------
+
+    def _build_body(self):
         body = tk.Frame(self.root, bg=BG)
-        body.pack(fill="both", expand=True, padx=12, pady=(0, 4))
+        body.pack(fill="both", expand=True, padx=BODY_PAD_X, pady=(BODY_PAD_TOP, 0))
         body.columnconfigure(0, weight=1, uniform="col")
         body.columnconfigure(2, weight=1, uniform="col")
-
-        tk.Label(body, text="● NEW MODS", font=("Segoe UI", 10, "bold"),
-                 fg=ACCENT_NEW, bg=BG, anchor="w").grid(row=0, column=0, sticky="w", pady=(0, 3))
-        self._new_frame = tk.Frame(body, bg=BG)
-        self._new_frame.grid(row=1, column=0, sticky="nsew")
-
-        tk.Frame(body, bg=SEPARATOR, width=1).grid(
-            row=0, column=1, rowspan=2, sticky="ns", padx=8)
-
-        tk.Label(body, text="● UPDATED MODS", font=("Segoe UI", 10, "bold"),
-                 fg=ACCENT_UPD, bg=BG, anchor="w").grid(row=0, column=2, sticky="w", pady=(0, 3))
-        self._upd_frame = tk.Frame(body, bg=BG)
-        self._upd_frame.grid(row=1, column=2, sticky="nsew")
         body.rowconfigure(1, weight=1)
 
-        self._set_placeholder(self._new_frame, "Checking…")
-        self._set_placeholder(self._upd_frame, "Checking…")
+        self._new_count, self._col_header = self._column_header(
+            body, 0, "New Mods", ACCENT_NEW)
+        self._upd_count, _ = self._column_header(body, 2, "Updated Mods", ACCENT_UPD)
 
-        bar = tk.Frame(self.root, bg=STATUS_BG, pady=3)
+        # A plain gutter instead of the divider rule that used to sit here: two
+        # columns of outlined cards already read as two columns.
+        tk.Frame(body, bg=BG, width=BODY_PAD_X).grid(
+            row=0, column=1, rowspan=2, sticky="ns")
+
+        new_col = tk.Frame(body, bg=BG)
+        new_col.grid(row=1, column=0, sticky="nsew")
+        self._new_frame = build_scroll_area(new_col)
+
+        upd_col = tk.Frame(body, bg=BG)
+        upd_col.grid(row=1, column=2, sticky="nsew")
+        self._upd_frame = build_scroll_area(upd_col)
+
+        self._set_placeholder(self._new_frame, "Checking the Forge…")
+        self._set_placeholder(self._upd_frame, "Checking the Forge…")
+
+    def _column_header(self, parent, column, text, color):
+        """Returns (count label, row). _apply keeps the count in step with the
+        column; the row is measured by _size_to_fit."""
+        row = tk.Frame(parent, bg=BG)
+        row.grid(row=0, column=column, sticky="ew", pady=(0, COL_HEADER_GAP))
+        swatch = dot(8, color)
+        lbl = tk.Label(row, image=swatch, bg=BG)
+        lbl._swatch = swatch
+        lbl.pack(side="left", padx=(0, 8))
+        tk.Label(row, text=text.upper(), font=font(9, "bold"), fg=color,
+                 bg=BG).pack(side="left")
+        count = tk.Label(row, text="", font=font(9, "bold"), fg=TEXT_FAINT, bg=BG)
+        count.pack(side="left", padx=(8, 0))
+        tk.Frame(row, bg=SEPARATOR, height=1).pack(
+            side="left", fill="x", expand=True, padx=(12, 0), pady=(1, 0))
+        return count, row
+
+    # -- Status bar -----------------------------------------------------
+
+    def _build_status_bar(self):
+        bar = self._status_bar = tk.Frame(self.root, bg=STATUS_BG)
         bar.pack(fill="x", side="bottom")
-        self._forge_dot = tk.Label(bar, text="●", font=("Segoe UI", 6),
-                                   fg=TEXT_DIM, bg=STATUS_BG)
-        self._forge_dot.pack(side="left", padx=(10, 2))
+        tk.Frame(bar, bg=SEPARATOR, height=1).pack(fill="x", side="top")
+        inner = tk.Frame(bar, bg=STATUS_BG, pady=7)
+        inner.pack(fill="x", padx=14)
+
+        self._forge_dot_ok = dot(7, ACCENT_NEW)
+        self._forge_dot_bad = dot(7, ACCENT_DANGER)
+        self._forge_dot_idle = dot(7, TEXT_FAINT)
+        self._forge_dot = tk.Label(inner, image=self._forge_dot_idle, bg=STATUS_BG)
+        self._forge_dot.pack(side="left", padx=(0, 8))
         self._bind_tooltip(
             self._forge_dot,
             "Green: last check reached the Forge OK\nRed: last check failed (retrying)",
         )
 
-        self._lbl_status = tk.Label(bar, text="Starting…", font=("Segoe UI", 8),
+        self._lbl_status = tk.Label(inner, text="Starting…", font=font(8),
                                     fg=TEXT_DIM, bg=STATUS_BG)
         self._lbl_status.pack(side="left")
 
-        self._lbl_timer = tk.Label(bar, text="", font=("Segoe UI", 8),
-                                   fg=TEXT_DIM, bg=STATUS_BG)
-        self._lbl_timer.pack(side="right", padx=10)
+        self._lbl_timer = tk.Label(inner, text="", font=font(8),
+                                   fg=TEXT_FAINT, bg=STATUS_BG)
+        self._lbl_timer.pack(side="right")
 
-        # Built but left unpacked -- it only appears once a newer release is
+        # Left unbuilt -- the update chip only appears once a newer release is
         # actually found, so the bar stays quiet for anyone already current.
+        self._status_inner = inner
         self._update_url = FORGE_MOD_PAGE
-        self._update_lbl = tk.Label(bar, text="", font=("Segoe UI", 8, "bold"),
-                                    fg=ACCENT_NEW, bg=STATUS_BG, cursor="hand2")
-        self._update_lbl.bind(
-            "<Button-1>", lambda _e: webbrowser.open(self._update_url))
+        self._update_lbl = None
 
     @staticmethod
     def _set_placeholder(frame, text):
+        """The empty/waiting state for a column. A ring glyph above the line of
+        text, because a lone sentence of dim gray in an otherwise blank column
+        reads as a label that failed to load rather than as "nothing here"."""
         for w in frame.winfo_children():
             w.destroy()
-        tk.Label(frame, text=text, font=("Segoe UI", 9), fg=TEXT_DIM,
-                 bg=BG, justify="center").pack(pady=20)
+        holder = tk.Frame(frame, bg=BG)
+        holder.pack(fill="x", pady=(54, 0))
+        glyph = ring(26, SEPARATOR, width=2)
+        lbl = tk.Label(holder, image=glyph, bg=BG)
+        lbl._glyph = glyph
+        lbl.pack()
+        tk.Label(holder, text=text, font=font(9), fg=TEXT_FAINT,
+                 bg=BG, justify="center", wraplength=250).pack(pady=(12, 0))
 
     # ── Tooltip ─────────────────────────────────────────────────────────
+
+    def _popup_shell(self, widget, pad_x=10, pad_y=7):
+        """A bordered dark panel anchored under `widget`, used for both the
+        hover tooltips and the category legend. The 1px outer frame is doing
+        real work: an unbordered dark popup over a dark window has no edge, so
+        it reads as text spilling onto the page rather than as a panel."""
+        x = widget.winfo_rootx()
+        y = widget.winfo_rooty() + widget.winfo_height() + 6
+        tw = tk.Toplevel(self.root)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry(f"+{x}+{y}")
+        tw.configure(bg=BORDER)
+        inner = tk.Frame(tw, bg=CARD_BG, padx=pad_x, pady=pad_y)
+        inner.pack(padx=1, pady=1)
+        return tw, inner
 
     def _bind_tooltip(self, widget, text):
         widget.bind("<Enter>", lambda _e: self._tooltip_hover_start(widget, text))
         widget.bind("<Leave>", self._tooltip_hover_end)
 
     def _tooltip_hover_start(self, widget, text):
-        self._tooltip_id = self.root.after(1000, lambda: self._show_tooltip(widget, text))
+        self._tooltip_id = self.root.after(700, lambda: self._show_tooltip(widget, text))
 
     def _tooltip_hover_end(self, _e=None):
         if self._tooltip_id:
@@ -232,19 +354,14 @@ class SPTCheckerApp:
 
     def _show_tooltip(self, widget, text):
         self._tooltip_id = None
-        x = widget.winfo_rootx()
-        y = widget.winfo_rooty() + widget.winfo_height() + 4
-        tw = tk.Toplevel(self.root)
-        tw.wm_overrideredirect(True)
-        tw.wm_geometry(f"+{x}+{y}")
-        tw.configure(bg=CARD_BG)
-        tk.Label(tw, text=text, font=("Segoe UI", 8), fg=TEXT, bg=CARD_BG,
-                 padx=8, pady=4, justify="left").pack()
+        tw, inner = self._popup_shell(widget)
+        tk.Label(inner, text=text, font=font(8), fg=TEXT, bg=CARD_BG,
+                 justify="left").pack()
         self._tooltip_win = tw
 
     def _legend_enter(self, _e):
         self._legend_icon.configure(image=self._legend_icon_bright)
-        self._tooltip_id = self.root.after(500, self._show_legend)
+        self._tooltip_id = self.root.after(400, self._show_legend)
 
     def _legend_leave(self, _e=None):
         self._legend_icon.configure(image=self._legend_icon_dim)
@@ -252,37 +369,24 @@ class SPTCheckerApp:
 
     def _show_legend(self):
         self._tooltip_id = None
-        x = self._legend_icon.winfo_rootx()
-        y = self._legend_icon.winfo_rooty() + self._legend_icon.winfo_height() + 4
-        tw = tk.Toplevel(self.root)
-        tw.wm_overrideredirect(True)
-        tw.wm_geometry(f"+{x}+{y}")
-        tw.configure(bg=CARD_BG)
-
-        inner = tk.Frame(tw, bg=CARD_BG, padx=10, pady=8)
-        inner.pack()
-        tk.Label(inner, text="CARD COLOR MEANS CATEGORY", font=("Segoe UI", 8, "bold"),
-                 fg=TEXT_DIM, bg=CARD_BG, anchor="w").grid(
-            row=0, column=0, columnspan=4, sticky="w", pady=(0, 6))
+        tw, inner = self._popup_shell(self._legend_icon, pad_x=14, pad_y=12)
+        tk.Label(inner, text="CARD BORDER = CATEGORY", font=font(8, "bold"),
+                 fg=TEXT_FAINT, bg=CARD_BG, anchor="w").grid(
+            row=0, column=0, columnspan=4, sticky="w", pady=(0, 9))
 
         tw._dot_photos = []  # keep PhotoImage refs alive for this popup's lifetime
         cols = 2
-        for i, (category, color) in enumerate(CATEGORY_COLORS.items()):
+        entries = list(CATEGORY_COLORS.items()) + [("Other / uncategorized",
+                                                    CATEGORY_COLOR_DEFAULT)]
+        for i, (category, color) in enumerate(entries):
             row, col = i // cols + 1, (i % cols) * 2
-            dot = _render_dot(color)
-            tw._dot_photos.append(dot)
-            tk.Label(inner, image=dot, bg=CARD_BG).grid(
-                row=row, column=col, sticky="w", padx=(0, 6), pady=2)
-            tk.Label(inner, text=category, font=("Segoe UI", 8), fg=TEXT, bg=CARD_BG,
-                     anchor="w").grid(row=row, column=col + 1, sticky="w", padx=(0, 14), pady=2)
-
-        last_row = len(CATEGORY_COLORS) // cols + 2
-        other_dot = _render_dot(CATEGORY_COLOR_DEFAULT)
-        tw._dot_photos.append(other_dot)
-        tk.Label(inner, image=other_dot, bg=CARD_BG).grid(
-            row=last_row, column=0, sticky="w", padx=(0, 6), pady=(6, 0))
-        tk.Label(inner, text="Other / uncategorized", font=("Segoe UI", 8), fg=TEXT, bg=CARD_BG,
-                 anchor="w").grid(row=last_row, column=1, columnspan=3, sticky="w", pady=(6, 0))
+            swatch = dot(9, color)
+            tw._dot_photos.append(swatch)
+            tk.Label(inner, image=swatch, bg=CARD_BG).grid(
+                row=row, column=col, sticky="w", padx=(0, 8), pady=3)
+            tk.Label(inner, text=category, font=font(8), fg=TEXT, bg=CARD_BG,
+                     anchor="w").grid(row=row, column=col + 1, sticky="w",
+                                      padx=(0, 18), pady=3)
 
         self._tooltip_win = tw
 
@@ -311,6 +415,8 @@ class SPTCheckerApp:
             on_toggle=self._toggle_local_scan,
             on_path_change=self._set_local_scan_path,
             on_scan_now=self._scan_local_now,
+            on_endorse=self._mark_endorsed,
+            endorsed=self.state.get("endorsed", []),
         )
         if self._scanning:
             # A scan is already running (e.g. the startup auto-scan) --
@@ -320,6 +426,19 @@ class SPTCheckerApp:
             cached = self.state.get("local_scan_results")
             if cached:
                 self._local_scan_window.set_results(cached)
+
+    def _mark_endorsed(self, link):
+        """Remember that this mod was opened to be endorsed.
+
+        A local note only: the Forge API is read-only, so the app has no way to
+        read back whether the endorsement actually happened. It exists so a mod
+        already dealt with looks different from one still waiting, not as a
+        claim about the Forge's own records.
+        """
+        endorsed = self.state.setdefault("endorsed", [])
+        if link not in endorsed:
+            endorsed.append(link)
+            save_state(self.state)
 
     def _toggle_local_scan(self, enabled):
         self.state["local_scan_enabled"] = enabled
@@ -467,16 +586,22 @@ class SPTCheckerApp:
                         UPDATE_CHECK_INTERVAL_HOURS * 3600 * 1000)
 
     def _show_update_available(self, version, url=FORGE_MOD_PAGE):
-        """Surface the newer release in the status bar. Packed on first
-        discovery only -- re-packing on every subsequent check would shuffle
-        the bar's layout for no reason."""
+        """Surface the newer release in the status bar as a chip -- the one
+        thing in that bar worth clicking, so it should not read as another line
+        of status text. Rebuilt rather than reconfigured because the chip's
+        pill is rendered to fit its label, and the version only changes on the
+        rare occasion a newer release actually appears."""
         self._update_url = url
-        self._update_lbl.configure(text=f"●  v{version} available")
-        if not self._update_lbl.winfo_ismapped():
-            self._update_lbl.pack(side="right", padx=(0, 4))
-            self._bind_tooltip(
-                self._update_lbl,
-                f"SPTChecker v{version} is on the Forge.\nClick to open its page.")
+        if self._update_lbl is not None:
+            self._update_lbl.destroy()
+        self._update_lbl = chip(self._status_inner, f"↑  v{version} available",
+                                ACCENT_NEW, surface=STATUS_BG, font_size=8)
+        self._update_lbl.configure(cursor="hand2")
+        self._update_lbl.pack(side="right", padx=(0, 16))
+        self._update_lbl.bind("<Button-1>", lambda _e: webbrowser.open(self._update_url))
+        self._bind_tooltip(
+            self._update_lbl,
+            f"SPTChecker v{version} is on the Forge.\nClick to open its page.")
 
     # ── Check logic ────────────────────────────────────────────────────
 
@@ -587,25 +712,30 @@ class SPTCheckerApp:
     def _apply(self, display_new, display_upd, first_run, n_fresh_new=0, n_fresh_upd=0):
         self._checking = False
         self._btn.configure(state="normal", text="Check Now")
-        self._forge_dot.configure(fg=ACCENT_NEW)
-        now = datetime.now().strftime("%H:%M:%S")
+        self._forge_dot.configure(image=self._forge_dot_ok)
+        self._lbl_status.configure(fg=TEXT_DIM)
+        now = datetime.now().strftime("%H:%M")
         total = len(self.state.get("mods", {}))
 
         self._new_sig = self._render_column(
             self._new_frame, display_new, self._new_sig, first_run,
-            "Baseline set — monitoring for new mods…", "No new mods detected yet.")
+            "Baseline set.\nWatching for new mods…", "Nothing new since the last check.")
         self._upd_sig = self._render_column(
             self._upd_frame, display_upd, self._upd_sig, first_run,
-            "Baseline set — monitoring for updates…", "No updates detected yet.")
+            "Baseline set.\nWatching for updates…", "No updates since the last check.")
+        self._new_count.configure(text=str(len(display_new)) if display_new else "")
+        self._upd_count.configure(text=str(len(display_upd)) if display_upd else "")
 
         if first_run:
-            self._lbl_status.configure(text=f"Baseline: {total} mods cataloged at {now}")
+            self._lbl_status.configure(text=f"Baseline set — {total:,} mods cataloged at {now}")
         elif n_fresh_new or n_fresh_upd:
             self._lbl_status.configure(
-                text=f"{n_fresh_new} new, {n_fresh_upd} updated at {now}  •  Tracking {total}"
+                text=f"{n_fresh_new} new, {n_fresh_upd} updated at {now}"
+                     f"   ·   tracking {total:,} mods"
             )
         else:
-            self._lbl_status.configure(text=f"No changes at {now}  •  Tracking {total} mods")
+            self._lbl_status.configure(
+                text=f"No changes at {now}   ·   tracking {total:,} mods")
 
         if not self._visible and not first_run:
             self._unread_count += n_fresh_new + n_fresh_upd
@@ -623,8 +753,10 @@ class SPTCheckerApp:
     def _on_error(self, msg, prefix="Error: "):
         self._checking = False
         self._btn.configure(state="normal", text="Check Now")
-        self._forge_dot.configure(fg="#e53935")
-        self._lbl_status.configure(text=f"{prefix}{msg}")
+        self._forge_dot.configure(image=self._forge_dot_bad)
+        # Colored to match the status dot: a failure reported in the same dim
+        # gray as a successful check is a failure nobody notices.
+        self._lbl_status.configure(text=f"{prefix}{msg}", fg=ACCENT_DANGER)
         # A failed check leaves both columns empty on a cold start, since
         # nothing has rendered yet -- fall back to the last results saved to
         # state so the window still shows the most recent known mods (stale,
@@ -685,12 +817,14 @@ class SPTCheckerApp:
         photos = self._photos[frame] = []
         for w in frame.winfo_children():
             w.destroy()
+        endorsed = set(self.state.get("endorsed", []))
         for mod in mods:
-            photo = ImageTk.PhotoImage(mod.pop("_pil"))
+            photo = ImageTk.PhotoImage(rounded_photo(mod.pop("_pil")))
             photos.append(photo)
             accent = CATEGORY_COLORS.get(mod.get("category"), CATEGORY_COLOR_DEFAULT)
-            card = ModCard(frame, mod, accent, photo)
-            card.pack(fill="x", pady=2)
+            mod["endorsed"] = mod.get("link") in endorsed
+            card = ModCard(frame, mod, accent, photo, on_endorse=self._mark_endorsed)
+            card.pack(fill="x", pady=CARD_GAP, padx=(0, 2))
 
     @staticmethod
     def _column_signature(mods):
@@ -721,7 +855,7 @@ class SPTCheckerApp:
             return
         if self._visible:
             m, s = divmod(left, 60)
-            self._lbl_timer.configure(text=f"Next check in {m:02d}:{s:02d}")
+            self._lbl_timer.configure(text=f"Next check {m:02d}:{s:02d}")
             self._timer_after_id = self.root.after(1000, self._tick_timer)
         else:
             self._timer_after_id = self.root.after(left * 1000, self._tick_timer)

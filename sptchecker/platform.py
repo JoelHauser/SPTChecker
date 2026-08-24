@@ -6,7 +6,14 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 from winotify import Notification
 
-from .config import ASSETS_DIR, STARTUP_REG_NAME, STARTUP_REG_PATH
+from .config import (
+    ACCENT_DANGER, ACCENT_NEW, ASSETS_DIR, BG, CARD_BG, STARTUP_REG_NAME,
+    STARTUP_REG_PATH, TEXT_BRIGHT,
+)
+
+
+def _rgb(hex_color, alpha=255):
+    return tuple(int(hex_color[i:i + 2], 16) for i in (1, 3, 5)) + (alpha,)
 
 # ── DPI awareness ──────────────────────────────────────────────────────
 
@@ -157,21 +164,21 @@ def load_app_icon():
     return _fallback_icon()
 
 
-def badge_icon(image, color="#e53935"):
+def badge_icon(image, color=ACCENT_DANGER):
     """Return a copy of image with a notification dot added to the top-right corner."""
     img = image.convert("RGBA").copy()
     w, _h = img.size
     r = max(6, w // 5)
     cx, cy = w - r - 2, r + 2
     draw = ImageDraw.Draw(img)
-    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=color, outline=(26, 26, 36, 255), width=2)
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=color, outline=_rgb(BG), width=2)
     return img
 
 
 def _fallback_icon():
-    img = Image.new("RGBA", (64, 64), (26, 26, 36, 255))
+    img = Image.new("RGBA", (64, 64), _rgb(BG))
     draw = ImageDraw.Draw(img)
-    draw.rounded_rectangle([4, 4, 60, 60], radius=10, fill=(37, 37, 53, 255),
-                           outline=(76, 175, 80, 255), width=3)
-    draw.text((14, 8), "SPT", fill=(238, 238, 244, 255))
+    draw.rounded_rectangle([4, 4, 60, 60], radius=12, fill=_rgb(CARD_BG),
+                           outline=_rgb(ACCENT_NEW), width=3)
+    draw.text((14, 8), "SPT", fill=_rgb(TEXT_BRIGHT))
     return img

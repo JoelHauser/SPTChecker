@@ -2,7 +2,7 @@
 
 A lightweight Windows desktop app that watches the [SPT Forge](https://sp-mod.com/mods) for new and updated mods — and, optionally, checks your own installed mods against it.
 
-> **The Forge moved to sp-mod.com.** The Forge changed hands and now lives at **sp-mod.com**; the old `forge.sp-tarkov.com` is fully offline. **Update to 3.3.3** — anything before 3.3.0 points at the dead domain and cannot reach anything at all. Your saved history carries over automatically on first launch: mod ids were preserved across the move, so already-seen mods aren't re-reported and your tracked count stays intact.
+> **The Forge moved to sp-mod.com.** The Forge changed hands and now lives at **sp-mod.com**; the old `forge.sp-tarkov.com` is fully offline. **Update to 3.4.0** — anything before 3.3.0 points at the dead domain and cannot reach anything at all. Your saved history carries over automatically on first launch: mod ids were preserved across the move, so already-seen mods aren't re-reported and your tracked count stays intact.
 
 > **Note on antivirus flags:** A small number of vendors may flag this exe as malicious. Most of them (ALYac, Arcabit, Emsisoft, eScan, GData, VIPRE) all run BitDefender's engine under the hood and are triggering off the same single false positive detection. These are not real threats. Source code is open on GitHub.
 
@@ -33,18 +33,18 @@ A full check completes in roughly two seconds. Requests are paced and automatica
 ### UI
 
 - **Two-panel layout** — New mods on the left, recently updated mods on the right (up to 7 per column)
-- **Mod cards** — Each card shows the thumbnail, title, author, version, category, and description
+- **Mod cards** — Each card shows the thumbnail, title, author, version, category, and description, on a rounded surface outlined in its category color
 - **Version diff** — Updated mods show the version change inline (e.g. `1.2.3 → 1.3.0`)
-- **View Change Notes** — A small icon on updated mod cards opens a popup with that version's changelog, rendered as actual markdown (bold, italic, inline code, headers, bullet lists, and clickable links that open in your browser) rather than a plain text dump, plus a direct "Open on Forge" button
+- **View Change Notes** — A small icon on updated mod cards opens a popup with that version's changelog, anchored to the card so you can see which mod it belongs to; click the same icon again (or press Escape) to close it. Rendered as actual markdown (bold, italic, inline code, headers, bullet lists, and clickable links that open in your browser) rather than a plain text dump, plus a direct "Open on Forge" button
 - **NEW badge** — Freshly detected mods are marked with a green NEW badge so you can spot changes at a glance
 - **NEW AUTHOR badge** — Mods from accounts created in the last 60 days are flagged so you can spot new community members
 - **Timestamps** — Each card shows how long ago the mod was published or updated (e.g. "2h ago", "yesterday")
-- **Hover-scrolling** — Hover over any card to smoothly scroll truncated text and read the full details
+- **Hover-scrolling** — Long titles and descriptions are trimmed with an ellipsis; hover a card to smoothly scroll them and read the full text
 - **Click to open** — Click any card to open the mod page directly on the Forge
 - **Right-click menu** — Right-click any card for quick options to view change notes, open on Forge, or copy the link
 - **Category legend** — Hover the info icon in the header for a color key to every mod category
 - **Stats window** — Click **Stats** for total mods tracked, mods added this week, a 30-day daily-activity chart (hover any point for the exact date/count), and the top 5 authors/categories by activity in the last 30 days (rolls forward automatically, no manual reset). Author names are clickable and open their Forge profile
-- **Window size memory** — The app remembers and restores its window size between sessions
+- **Right-sized on first launch** — The window opens sized to show every card without scrolling, measured against your display scaling rather than assumed. After that it remembers and restores whatever size you chose; shrink it and both columns scroll
 - **Dark theme** — Styled to match the SPT aesthetic
 
 ---
@@ -94,7 +94,7 @@ Click **Local Mods** to check your own installed mods against the Forge — enti
 
 ### Additional features
 
-- **Run on Startup** — One-click checkbox to launch silently in the background when Windows starts
+- **Run on Startup** — One-click toggle to launch silently in the background when Windows starts
 - **Thumbnail caching** — Mod thumbnails are cached to disk and auto-purged after 3 days; mods with no uploaded thumbnail get the same wireframe placeholder icon shown on the Forge itself, instead of a blank box
 - **Unpublished mod detection** — Mods removed from the Forge are automatically cleared from the display, verified in a single batched lookup rather than one request per mod
 - **Fails safe, never guesses** — Ambiguous matches are reported as unmatched rather than guessed at, and any network failure leaves the display untouched instead of hiding mods

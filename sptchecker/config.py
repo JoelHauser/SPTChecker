@@ -20,7 +20,7 @@ CACHE_DIR = DATA_DIR / "thumb_cache"
 # baseline the self-update check compares releases against. version_info.py
 # and the .spec still carry their own copy, since PyInstaller reads those at
 # build time and can't import this -- keep all three in step when bumping.
-APP_VERSION = "3.3.3"
+APP_VERSION = "3.4.0"
 
 # This app's own listing on the Forge -- where users actually download it, so
 # it's the version that matters for "am I out of date". Checked through the
@@ -80,6 +80,24 @@ NEW_AUTHOR_DAYS = 60
 TOP_STATS_WINDOW_DAYS = 30
 TREND_WINDOW_DAYS = 30
 
+# ── Endorsing (dormant) ────────────────────────────────────────────────
+
+# Off, and deliberately still here rather than deleted.
+#
+# Endorsing is a per-user action, so it needs the Forge to know who is asking.
+# The v0 API cannot: it is documented as "publicly accessible and requires no
+# authentication or API key", every route is a GET, and /api/v0/mod/{id}/endorse
+# answers 404 rather than the 405 a POST-only route would give. The only way to
+# do it today would be driving the website with the user's own login, which is
+# not something to build into a third-party download.
+#
+# So the button was taken out of the UI, not the code. Everything behind it
+# still works -- the glyph, the per-mod state, the plumbing through to
+# save_state -- and it currently opens the mod's Forge page rather than
+# endorsing directly. If the Forge ever ships user API tokens, flip this to
+# True and replace ModCard._endorse's webbrowser.open with the real call.
+ENDORSE_ENABLED = False
+
 # ── Local mod scan (opt-in) ──────────────────────────────────────────────
 
 # Client plugins sit at the game root in every version -- deliberately *not*
@@ -126,9 +144,30 @@ PUBLISHED_CHUNK_SIZE = 50
 
 # ── Window ─────────────────────────────────────────────────────────────
 
-WINDOW_DEFAULT_GEOMETRY = "780x600"
-WINDOW_MIN_WIDTH = 700
-WINDOW_MIN_HEIGHT = 500
+# The window opens at this width and is then sized to fit vertically (see
+# _size_to_fit). Chosen as the tightest width at which a mod title and its
+# author/category line still survive without ellipsis on most cards -- below
+# roughly this, titles start losing words and the category collapses to a
+# lone ellipsis. Raised at runtime if the header needs more room than this,
+# which it does at higher display scaling.
+WINDOW_DEFAULT_WIDTH = 720
+# Only the height here is provisional: it is on screen for the moment between
+# the window appearing and _size_to_fit measuring the real chrome.
+WINDOW_DEFAULT_GEOMETRY = f"{WINDOW_DEFAULT_WIDTH}x680"
+
+# Floor for manual resizing, not a recommendation -- the real minimum is
+# measured from the header at runtime, since that is the one part of the
+# window with a hard horizontal requirement. Both are deliberately below the
+# default: the columns scroll and the text ellipsizes, so someone who wants a
+# small window on a small screen can have one.
+WINDOW_MIN_WIDTH = 600
+WINDOW_MIN_HEIGHT = 420
+
+# Bumped whenever the card layout changes enough that a window size saved by an
+# older build no longer shows a full column. A geometry stored under a
+# different value is discarded once and re-fitted, so an existing user is not
+# left scrolling after an update that made the cards taller.
+LAYOUT_VERSION = 2
 
 # ── Windows registry ──────────────────────────────────────────────────
 
@@ -137,23 +176,37 @@ STARTUP_REG_NAME = "SPTModChecker"
 
 # ── Colors ─────────────────────────────────────────────────────────────
 
-BG = "#1a1a24"
-CARD_BG = "#252535"
-CARD_HOVER = "#30304a"
-TEXT = "#ccccdd"
-TEXT_DIM = "#777799"
-TEXT_BRIGHT = "#eeeef4"
-ACCENT_NEW = "#4caf50"
-ACCENT_UPD = "#ffa726"
-ACCENT_NEW_AUTHOR = "#e91e63"
-STATUS_BG = "#14141c"
-SEPARATOR = "#333348"
+# Surfaces run darkest (window chrome) to lightest (a hovered card), and every
+# boundary in the UI is drawn with that value step rather than an outline -- a
+# dense list then reads as a stack of panels instead of a grid of boxes.
+BG = "#101219"            # window background, behind the cards
+STATUS_BG = "#0b0d13"     # recessed chrome: header bar, status bar, popup bars
+CARD_BG = "#1a1d27"       # raised surface: cards, inputs, popup panels
+CARD_HOVER = "#262b3a"    # the same surface under the cursor
+SEPARATOR = "#262b38"     # hairline rules
+BORDER = "#2f3545"        # outline on interactive chrome (buttons, inputs)
 
-# Card border color by mod category -- matches Forge's own category list.
+TEXT_BRIGHT = "#eef0f6"   # titles and primary numbers
+TEXT = "#bcc2d2"          # body copy and button labels
+TEXT_DIM = "#828ba1"      # metadata, descriptions
+TEXT_FAINT = "#5b6377"    # rank numbers, disabled labels
+
+# Semantic accents. Green/amber are load-bearing (new vs updated) and are kept
+# clear of every category hue below so a card's rail can never be mistaken for
+# one of them.
+ACCENT_NEW = "#4ad07f"
+ACCENT_UPD = "#f2a53c"
+ACCENT_NEW_AUTHOR = "#ef5a92"
+ACCENT_DANGER = "#ef5350"
+
+# Card accent color by mod category -- matches Forge's own category list.
 # "Other" and any unrecognized category fall back to CATEGORY_COLOR_DEFAULT.
 # Hues are deliberately spread >=15 degrees apart (computed, not eyeballed) and
 # kept >=20 degrees clear of the reserved green/orange/pink accents above, so
 # adjacent categories stay visually distinguishable rather than blurring together.
+# The card border still carries this color, but as a 1px rounded stroke with a
+# thicker rail down the left edge rather than the flat 2px rectangle it used to
+# be -- same signal, without a full column reading as a wall of boxes.
 CATEGORY_COLORS = {
     "Weapons": "#cf4b3f",
     "Overhauls": "#d9d568",
@@ -174,4 +227,13 @@ CATEGORY_COLORS = {
     "Traders": "#78909c",
     "Equipment": "#9e9e9e",
 }
-CATEGORY_COLOR_DEFAULT = SEPARATOR
+CATEGORY_COLOR_DEFAULT = "#4a5266"
+
+# ── Metrics ────────────────────────────────────────────────────────────
+
+# One spacing scale for the whole UI. Every pad/gap is a multiple of it, which
+# is what stops a hand-tuned layout from drifting into a dozen near-identical
+# 3/4/5px values that read as sloppy rather than deliberate.
+SPACE = 4
+CARD_RADIUS = 8
+PILL_RADIUS = 999   # clamped to half the height -- i.e. a full stadium
