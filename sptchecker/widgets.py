@@ -688,7 +688,12 @@ class StatsWindow(FramelessPopup):
             return
         head = tk.Frame(parent, bg=BG)
         head.pack(fill="x", padx=16)
-        section_heading(head, f"Added per day · last {TREND_WINDOW_DAYS} days")
+        # "New mods per day", not "added per day": this counts mods newly
+        # published to the Forge and never counts updates, and the vaguer
+        # wording read as "things added to my tracker" -- which made a
+        # correct zero on a day that had updates but no new releases look
+        # like the chart had stopped working.
+        section_heading(head, f"New mods per day · last {TREND_WINDOW_DAYS} days")
 
         height = 76
         pad_top, pad_bottom = 10, 8

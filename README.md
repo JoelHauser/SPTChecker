@@ -43,7 +43,7 @@ A full check completes in roughly two seconds. Requests are paced and automatica
 - **Click to open** — Click any card to open the mod page directly on the Forge
 - **Right-click menu** — Right-click any card for quick options to view change notes, open on Forge, or copy the link
 - **Category legend** — Hover the info icon in the header for a color key to every mod category
-- **Stats window** — Click **Stats** for total mods tracked, mods added this week, a 30-day daily-activity chart (hover any point for the exact date/count), and the top 5 authors/categories by activity in the last 30 days (rolls forward automatically, no manual reset). Author names are clickable and open their Forge profile
+- **Stats window** — Click **Stats** for total mods tracked, mods added this week, a 30-day chart of new mods published per day (hover any point for the exact date/count), and the top 5 authors/categories by activity in the last 30 days (rolls forward automatically, no manual reset). Author names are clickable and open their Forge profile
 - **Right-sized on first launch** — The window opens sized to show every card without scrolling, measured against your display scaling rather than assumed. After that it remembers and restores whatever size you chose; shrink it and both columns scroll
 - **Dark theme** — Styled to match the SPT aesthetic
 
