@@ -231,9 +231,4 @@ CATEGORY_COLOR_DEFAULT = "#4a5266"
 
 # ── Metrics ────────────────────────────────────────────────────────────
 
-# One spacing scale for the whole UI. Every pad/gap is a multiple of it, which
-# is what stops a hand-tuned layout from drifting into a dozen near-identical
-# 3/4/5px values that read as sloppy rather than deliberate.
-SPACE = 4
 CARD_RADIUS = 8
-PILL_RADIUS = 999   # clamped to half the height -- i.e. a full stadium

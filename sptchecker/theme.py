@@ -82,10 +82,6 @@ def lighten(hex_color, amount):
     return blend("#ffffff", hex_color, amount)
 
 
-def darken(hex_color, amount):
-    return blend("#000000", hex_color, amount)
-
-
 # ── Rendered primitives ────────────────────────────────────────────────
 
 def _rgba(hex_color, alpha=255):

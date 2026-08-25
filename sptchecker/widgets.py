@@ -214,20 +214,17 @@ def render_markdown(text_widget, raw):
 
 # ── Shared layout helpers ──────────────────────────────────────────────
 
-def section_heading(parent, text, color=TEXT_DIM, bg=BG, count=None, pady=(0, 6)):
+def section_heading(parent, text):
     """A small uppercase label with a hairline rule running to the right edge.
 
     The rule is what makes a heading read as the top of a section rather than
     just another line of text -- without it, a bare uppercase label floating
     over a list has no visible scope.
     """
-    row = tk.Frame(parent, bg=bg)
-    row.pack(fill="x", pady=pady)
-    tk.Label(row, text=text.upper(), font=font(8, "bold"), fg=color, bg=bg,
+    row = tk.Frame(parent, bg=BG)
+    row.pack(fill="x", pady=(0, 6))
+    tk.Label(row, text=text.upper(), font=font(8, "bold"), fg=TEXT_DIM, bg=BG,
              anchor="w").pack(side="left")
-    if count is not None:
-        tk.Label(row, text=str(count), font=font(8, "bold"), fg=TEXT_FAINT,
-                 bg=bg).pack(side="left", padx=(6, 0))
     rule = tk.Frame(row, bg=SEPARATOR, height=1)
     rule.pack(side="left", fill="x", expand=True, padx=(10, 0), pady=(1, 0))
     return row
@@ -415,9 +412,6 @@ class FramelessPopup(tk.Toplevel):
             self.lift()
             self.focus_force()
 
-    def make_scroll_area(self, parent):
-        return build_scroll_area(parent)
-
 
 class ChangeNotesWindow(FramelessPopup):
     """Popup window showing a mod's change notes / description as rendered markdown."""
@@ -526,11 +520,6 @@ class ChangeNotesWindow(FramelessPopup):
         those events reach this binding."""
         if e.widget is self and ChangeNotesWindow._open is self:
             ChangeNotesWindow._open = None
-
-
-def _blend(fg_hex, bg_hex, alpha):
-    """Kept as a module-level name because the stats chart reaches for it."""
-    return blend(fg_hex, bg_hex, alpha)
 
 
 def _format_day(iso_date):
