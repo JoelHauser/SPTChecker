@@ -10,6 +10,12 @@ chronological diary, which would grow without bound and cost context on every
 run. **Update the "Current state" section at the end when you finish a piece of
 work.**
 
+Session history lives in **[`docs/SESSION-LOG.md`](docs/SESSION-LOG.md)** — what
+was done, why, what was rejected, what was left unfinished. It is not
+auto-loaded; read it when picking up work started on another machine, and add
+an entry when you finish a session. The Forge listing text and patch notes are
+in [`docs/forge-listing.md`](docs/forge-listing.md).
+
 ---
 
 ## Layout
