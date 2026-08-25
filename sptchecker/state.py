@@ -7,7 +7,7 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageOps
 
 from .config import (
     CACHE_DIR, CARD_BG, DATA_DIR, HOST_MIGRATIONS, MIGRATED_URL_FIELDS,
@@ -158,7 +158,7 @@ def save_state(state):
 # version aren't reused -- entries are keyed by URL alone, which stays the
 # same even though the image we derive from it does not. Orphaned entries
 # from a previous generation age out via purge_old_thumbs.
-_THUMB_CACHE_GEN = 2
+_THUMB_CACHE_GEN = 3
 
 
 def _thumb_path(url):
@@ -191,12 +191,17 @@ def download_thumb(url):
         # colour the same way; fully opaque images have an all-255 mask and
         # are unaffected.
         img = Image.open(BytesIO(r.content)).convert("RGBA")
-        img.thumbnail(THUMB_SIZE, Image.LANCZOS)
-        canvas = Image.new("RGB", THUMB_SIZE, CARD_BG)
-        x = (THUMB_SIZE[0] - img.width) // 2
-        y = (THUMB_SIZE[1] - img.height) // 2
-        canvas.paste(img, (x, y), img)
-        canvas.save(cached, "JPEG", quality=85)
+        flat = Image.new("RGB", img.size, CARD_BG)
+        flat.paste(img, (0, 0), img)
+        # Scale-and-crop to fill the square rather than fitting the whole image
+        # inside it. Forge thumbnails are wide banners, so fitting them left a
+        # thin strip stranded in the middle of a mostly empty tile; filling
+        # gives every card the same solid block of art to lead with. The corner
+        # rounding is applied at display time, not baked in here, so the cache
+        # stays a plain tile and the card can round it against whatever surface
+        # it is currently painted.
+        canvas = ImageOps.fit(flat, THUMB_SIZE, Image.LANCZOS, centering=(0.5, 0.5))
+        canvas.save(cached, "JPEG", quality=88)
         return canvas
     except Exception:
         return None
