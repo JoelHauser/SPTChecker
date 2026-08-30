@@ -630,10 +630,18 @@ class SPTCheckerApp:
             self.state["last_check"] = datetime.now().isoformat()
 
             prev_new = self.state.get("display_new", [])
-            prev_upd = self.state.get("display_updated", [])
 
             display_new = newest[:MAX_PER_CATEGORY]
-            display_upd = updated[:MAX_PER_CATEGORY]
+            # A mod's first publication is both the newest-created and the
+            # newest-updated thing on the Forge, so it arrives in both feeds at
+            # once -- it used to take a slot in both columns and fire two
+            # toasts for the single event of a mod appearing. The new column
+            # wins: "this mod now exists" is the whole story, and the card
+            # carries its version either way. Filtered before the slice rather
+            # than after, so the updated column backfills to a full
+            # MAX_PER_CATEGORY instead of showing a hole.
+            new_links = {m["link"] for m in display_new}
+            display_upd = [m for m in updated if m["link"] not in new_links][:MAX_PER_CATEGORY]
 
             # One batched lookup covering both columns, rather than a request
             # per mod -- see unpublished_links().
@@ -657,9 +665,32 @@ class SPTCheckerApp:
                 mod["_pil"] = pil if pil else placeholder_thumb()
 
             prev_new_links = {m["link"] for m in prev_new}
-            prev_upd_links = {m["link"] for m in prev_upd}
+
+            def _version_moved(mod):
+                """Whether this mod's version actually changed since we last
+                recorded it.
+
+                This is the whole test for announcing an update, replacing
+                an older rule that fired whenever a mod *entered* the updated
+                column. Entering the column is not the same event: a brand new
+                mod is held out of that column above, but once it ages out of
+                the new column it drifts into the updated one and would
+                announce itself a second time as an "update" to the version it
+                launched with. The old rule also had the opposite failure --
+                a mod already sitting in the column that genuinely updated was
+                silently skipped, because it had not just entered.
+
+                Repeats take care of themselves: every checked mod's version
+                is written to state, so an unchanged mod fails this test on
+                the very next cycle. A mod we hold no record of gets the
+                benefit of the doubt -- the updated feed says it changed and
+                we have no earlier version to contradict it.
+                """
+                previous = prev_versions.get(mod["link"])
+                return previous is None or previous != mod.get("version", "")
+
             notify_new = [m for m in display_new if m["link"] not in prev_new_links] if not first_run else []
-            notify_upd = [m for m in display_upd if m["link"] not in prev_upd_links] if not first_run else []
+            notify_upd = [m for m in display_upd if _version_moved(m)] if not first_run else []
 
             # Mark fresh mods for NEW badge
             fresh_new_links = {m["link"] for m in notify_new}

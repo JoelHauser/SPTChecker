@@ -78,6 +78,12 @@ Each of these cost real debugging time. They are not hypothetical.
 - `published_at` (API) is the true publish time; RSS `pubDate` is when the
   listing was *created*, often a day earlier. The stats chart counts new
   publications only, never updates.
+- **A newly published mod appears in *both* feeds at once** -- it is
+  simultaneously the newest-created and the newest-updated thing on the site,
+  so `fetch_feeds()` returns it in both lists. `_bg_check` holds anything in
+  the new column out of the updated one; without that it filled a slot in
+  both and fired two toasts for one event. Roughly 12 of each 50-mod window
+  overlap, so this is the common case, not an edge one.
 
 ## Conventions
 
@@ -141,9 +147,14 @@ Then `python -m PyInstaller --noconfirm SPTModChecker_v<VER>.spec`.
   stats, popups and window sizing were all rebuilt. 3.4.1 fixed two bugs it
   introduced (popup close button activating the control underneath; change
   notes clipping their last lines).
-- The built `dist/SPTModChecker_v3.4.1.exe` predates the two most recent
-  commits (dead-code removal, chart relabel). Neither changes behaviour, but
-  a rebuild is needed before those reach users.
+- The built `dist/SPTModChecker_v3.4.1.exe` predates the most recent commits
+  (dead-code removal, chart relabel, and the duplicate new/updated fix). The
+  first two change nothing users see; the duplicate fix does, so a rebuild is
+  needed before it reaches them.
+- Update notifications fire on a mod's **version actually changing**, not on
+  it entering the updated column. The old rule missed a genuine update to a
+  mod already sitting in the column, and announced unchanged mods that
+  drifted back into it.
 
 ### Open items
 
