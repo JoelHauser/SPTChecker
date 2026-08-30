@@ -142,15 +142,15 @@ Then `python -m PyInstaller --noconfirm SPTModChecker_v<VER>.spec`.
 
 **Update this section as work completes.**
 
-- Version **3.4.1**, working branch **`checkertest`** (not `main`).
+- Version **3.4.2**, working branch **`checkertest`** (not `main`).
 - 3.4.0 was a full visual overhaul: `theme.py` is new, and cards, header,
   stats, popups and window sizing were all rebuilt. 3.4.1 fixed two bugs it
   introduced (popup close button activating the control underneath; change
-  notes clipping their last lines).
-- The built `dist/SPTModChecker_v3.4.1.exe` predates the most recent commits
-  (dead-code removal, chart relabel, and the duplicate new/updated fix). The
-  first two change nothing users see; the duplicate fix does, so a rebuild is
-  needed before it reaches them.
+  notes clipping their last lines). 3.4.2 stopped a newly published mod
+  filling a slot in both columns and firing two toasts.
+- **3.4.2 is not built yet.** `dist/` still holds the 3.4.1 exe; the version
+  bump is committed but PyInstaller has not been run, so nothing has reached
+  users.
 - Update notifications fire on a mod's **version actually changing**, not on
   it entering the updated column. The old rule missed a genuine update to a
   mod already sitting in the column, and announced unchanged mods that
