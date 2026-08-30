@@ -148,9 +148,11 @@ Then `python -m PyInstaller --noconfirm SPTModChecker_v<VER>.spec`.
   introduced (popup close button activating the control underneath; change
   notes clipping their last lines). 3.4.2 stopped a newly published mod
   filling a slot in both columns and firing two toasts.
-- **3.4.2 is not built yet.** `dist/` still holds the 3.4.1 exe; the version
-  bump is committed but PyInstaller has not been run, so nothing has reached
-  users.
+- **3.4.2 is built and smoke-tested**: `dist/SPTModChecker_v3.4.2.exe` plus a
+  matching `.zip` (the exe alone at the zip root, same shape as previous
+  releases). Not yet uploaded to the Forge or GitHub.
+- No 3.4.1 exe was ever built -- `dist/` went straight from 3.3.3 to 3.4.2,
+  so 3.4.1's two fixes reach users for the first time in this release.
 - Update notifications fire on a mod's **version actually changing**, not on
   it entering the updated column. The old rule missed a genuine update to a
   mod already sitting in the column, and announced unchanged mods that
