@@ -168,19 +168,19 @@ Then `python -m PyInstaller --noconfirm SPTModChecker_v<VER>.spec`.
 
 **Update this section as work completes.**
 
-- Version **3.4.2**, working branch **`checkertest`** (not `main`).
+- Version **3.4.3**, working branch **`checkertest`** (not `main`).
 - 3.4.0 was a full visual overhaul: `theme.py` is new, and cards, header,
   stats, popups and window sizing were all rebuilt. 3.4.1 fixed two bugs it
   introduced (popup close button activating the control underneath; change
   notes clipping their last lines). 3.4.2 stopped a newly published mod
   filling a slot in both columns and firing two toasts.
-- **3.4.2 is built and smoke-tested**: `dist/SPTModChecker_v3.4.2.exe` plus a
+- **3.4.3 is built and smoke-tested**: `dist/SPTModChecker_v3.4.3.exe` plus a
   matching `.zip` (the exe alone at the zip root, same shape as previous
-  releases). Not yet uploaded to the Forge or GitHub.
+  releases), tagged `V3.4.3`. The binary still has to be attached to a GitHub
+  release and uploaded to the Forge by hand -- `gh` is not installed here.
 - No 3.4.1 exe was ever built -- `dist/` went straight from 3.3.3 to 3.4.2,
-  so 3.4.1's two fixes reach users for the first time in this release.
-- Clicking a toast now raises the window (see **Toast activation**). Built
-  after 3.4.2 shipped, so it needs a version bump and a rebuild to reach users.
+  so 3.4.1's two fixes first reached users in 3.4.2.
+- 3.4.3 made a toast click raise the window (see **Toast activation**).
 - Update notifications fire on a mod's **version actually changing**, not on
   it entering the updated column. The old rule missed a genuine update to a
   mod already sitting in the column, and announced unchanged mods that
