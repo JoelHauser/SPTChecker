@@ -80,6 +80,9 @@ Click **Local Mods** to check your own installed mods against the Forge — enti
 - Right-click for **Show**, **Check Now**, or **Quit**
 - **Tray badge** — A red dot appears on the tray icon when there are unread changes while the app is minimized, with an unread count in the tooltip. Clears automatically when you open the window
 - Toast notifications work even while minimized
+- **Click a toast to open SPTChecker** — clicking the notification body brings the
+  window up from the tray, or starts the app if it isn't running. The **View on
+  Forge** button on the toast still goes straight to the mod page instead
 
 ---
 

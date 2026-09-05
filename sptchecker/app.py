@@ -22,9 +22,9 @@ from .feed import ForgeBlocked, fetch_feeds, unpublished_links
 from .localmods import detect_spt_version, scan_installed_mods
 from .matcher import match_local_mods
 from .platform import (
-    badge_icon, disable_show_animation, is_startup_enabled, load_app_icon,
-    refresh_startup_if_stale, send_toast, set_dark_title_bar, set_dpi_aware,
-    set_startup_enabled,
+    badge_icon, create_show_event, disable_show_animation, is_startup_enabled,
+    load_app_icon, refresh_startup_if_stale, register_show_protocol, send_toast,
+    set_dark_title_bar, set_dpi_aware, set_startup_enabled, wait_for_show_request,
 )
 from .state import (
     compute_stats, download_thumb, load_state, placeholder_thumb, purge_old_thumbs, save_state,
@@ -94,6 +94,7 @@ class SPTCheckerApp:
             # a size the user chose themselves is never overridden.
             self._size_to_fit()
         self._setup_tray()
+        self._setup_toast_activation()
 
         self.root.protocol("WM_DELETE_WINDOW", self._hide_to_tray)
 
@@ -544,6 +545,25 @@ class SPTCheckerApp:
         self._clear_unread()
         if self._next_check_ts:
             self._tick_timer()
+
+    def _setup_toast_activation(self):
+        """Make a click on a toast raise this window.
+
+        Windows shell-executes sptchecker://show, which starts a second copy of
+        the app; that copy signals this event and exits rather than opening a
+        rival window. The wait runs on its own thread because it blocks
+        indefinitely, and hands back to Tk the same way the tray does.
+        """
+        register_show_protocol()
+        self._show_event = create_show_event()
+        if self._show_event:
+            threading.Thread(target=self._watch_show_requests, daemon=True).start()
+
+    def _watch_show_requests(self):
+        while wait_for_show_request(self._show_event):
+            # _do_show touches widgets, so it has to run on the UI thread --
+            # same hand-off _tray_show makes from pystray's thread.
+            self.root.after(0, self._do_show)
 
     def _tray_check(self, _icon=None, _item=None):
         self.root.after(0, self._check_now)

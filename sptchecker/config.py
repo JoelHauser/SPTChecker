@@ -174,6 +174,23 @@ LAYOUT_VERSION = 2
 STARTUP_REG_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
 STARTUP_REG_NAME = "SPTModChecker"
 
+# ── Toast activation ──────────────────────────────────────────────────
+
+# Clicking a toast's body makes Windows shell-execute this URI, which routes
+# back to the app through a scheme it registers for itself under
+# HKCU\Software\Classes. A custom scheme rather than a localhost port or a
+# flag file: no firewall prompt, nothing stale left behind if the app is
+# killed, and Windows starts the app when it isn't already running.
+SHOW_PROTOCOL = "sptchecker"
+SHOW_URI = f"{SHOW_PROTOCOL}://show"
+PROTOCOL_REG_PATH = rf"Software\Classes\{SHOW_PROTOCOL}"
+# Named event the running instance waits on, so a second copy started by a
+# toast click can hand the request over and exit. "Local\" scopes it to the
+# logon session -- two users signed in at once each get their own app and
+# their own event, and "Global\" would demand privileges a normal user may
+# not have.
+SHOW_EVENT_NAME = r"Local\SPTChecker.ShowWindow"
+
 # ── Colors ─────────────────────────────────────────────────────────────
 
 # Surfaces run darkest (window chrome) to lightest (a hovered card), and every

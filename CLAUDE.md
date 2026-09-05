@@ -85,6 +85,32 @@ Each of these cost real debugging time. They are not hypothetical.
   both and fired two toasts for one event. Roughly 12 of each 50-mod window
   overlap, so this is the common case, not an edge one.
 
+## Toast activation
+
+Clicking a toast raises the window, via a chain worth knowing before touching
+any part of it:
+
+1. `send_toast` sets winotify's `launch=SHOW_URI`, which becomes
+   `activationType="protocol"` on the toast XML.
+2. Windows shell-executes `sptchecker://show`, resolved through a scheme the
+   app registers for itself in HKCU on every launch (`register_show_protocol`).
+3. That starts a **second copy of the app**. `main.py` spots the URI before
+   argparse sees it, signals a named event, and exits.
+4. The running copy's waiter thread wakes and calls `_do_show` on the UI
+   thread. If nothing was listening the app wasn't running, so the second copy
+   stays up and shows itself instead.
+
+- **Declare argtypes/restype on every event call.** A HANDLE is 64-bit; ctypes
+  defaults returns to C int and silently truncates it, so the wait then blocks
+  on a handle that is not the event -- and a truncated handle still looks like
+  a plausible number, so it fails invisibly.
+- **The event is auto-reset, so exactly one waiter wakes per signal.** If a
+  stale instance is left running during testing it eats the wake and the app
+  under test looks broken.
+- **`Process.MainWindowHandle` does not reliably report a Tk window** -- it
+  read 0 for a window that was plainly visible. Verify visibility by
+  enumerating windows and calling `IsWindowVisible`, not through .NET.
+
 ## Conventions
 
 - **Comments explain why, not what** — ideally naming the failure the code
@@ -153,6 +179,8 @@ Then `python -m PyInstaller --noconfirm SPTModChecker_v<VER>.spec`.
   releases). Not yet uploaded to the Forge or GitHub.
 - No 3.4.1 exe was ever built -- `dist/` went straight from 3.3.3 to 3.4.2,
   so 3.4.1's two fixes reach users for the first time in this release.
+- Clicking a toast now raises the window (see **Toast activation**). Built
+  after 3.4.2 shipped, so it needs a version bump and a rebuild to reach users.
 - Update notifications fire on a mod's **version actually changing**, not on
   it entering the updated column. The old rule missed a genuine update to a
   mod already sitting in the column, and announced unchanged mods that

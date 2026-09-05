@@ -1,14 +1,15 @@
 import ctypes
 import sys
 import winreg
+from ctypes import wintypes
 from pathlib import Path
 
 from PIL import Image, ImageDraw
 from winotify import Notification
 
 from .config import (
-    ACCENT_DANGER, ACCENT_NEW, ASSETS_DIR, BG, CARD_BG, STARTUP_REG_NAME,
-    STARTUP_REG_PATH, TEXT_BRIGHT,
+    ACCENT_DANGER, ACCENT_NEW, ASSETS_DIR, BG, CARD_BG, PROTOCOL_REG_PATH,
+    SHOW_EVENT_NAME, SHOW_URI, STARTUP_REG_NAME, STARTUP_REG_PATH, TEXT_BRIGHT,
 )
 
 
@@ -113,24 +114,139 @@ def refresh_startup_if_stale():
         set_startup_enabled(True)
 
 
+def _launch_command(*args):
+    """The command line that starts this app, however it happens to be running.
+
+    Frozen, that's the exe itself. From source it's pythonw.exe plus main.py --
+    pythonw specifically, since python.exe flashes a console window every time
+    Windows launches us behind the user's back, which is exactly what both
+    callers do.
+    """
+    if getattr(sys, "frozen", False):
+        parts = [f'"{sys.executable}"']
+    else:
+        exe = sys.executable
+        if exe.endswith("python.exe"):
+            exe = exe.replace("python.exe", "pythonw.exe")
+        script = str((Path(__file__).parent.parent / "main.py").resolve())
+        parts = [f'"{exe}"', f'"{script}"']
+    return " ".join(parts + list(args))
+
+
 def set_startup_enabled(enable):
     key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_REG_PATH, 0, winreg.KEY_SET_VALUE)
     if enable:
-        if getattr(sys, "frozen", False):
-            cmd = f'"{sys.executable}" --background'
-        else:
-            exe = sys.executable
-            if exe.endswith("python.exe"):
-                exe = exe.replace("python.exe", "pythonw.exe")
-            script = str((Path(__file__).parent.parent / "main.py").resolve())
-            cmd = f'"{exe}" "{script}" --background'
-        winreg.SetValueEx(key, STARTUP_REG_NAME, 0, winreg.REG_SZ, cmd)
+        winreg.SetValueEx(key, STARTUP_REG_NAME, 0, winreg.REG_SZ,
+                          _launch_command("--background"))
     else:
         try:
             winreg.DeleteValue(key, STARTUP_REG_NAME)
         except FileNotFoundError:
             pass
     winreg.CloseKey(key)
+
+
+# ── Toast click activation ───────────────────────────────────────────
+
+
+def register_show_protocol():
+    """Register the sptchecker:// scheme so clicking a toast reaches this app.
+
+    Rewritten on every launch rather than once, for the same reason
+    refresh_startup_if_stale exists: the stored command holds an absolute exe
+    path, and a user who moves or reinstalls the app would otherwise leave
+    Windows pointing every toast click at a path that is no longer there --
+    which fails silently, since a click that goes nowhere looks identical to a
+    toast that simply isn't clickable.
+    """
+    try:
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, PROTOCOL_REG_PATH) as key:
+            winreg.SetValueEx(key, "", 0, winreg.REG_SZ, "URL:SPTChecker")
+            # It's the presence of this value, not its content, that marks the
+            # key as a URI scheme. Without it Windows ignores the handler.
+            winreg.SetValueEx(key, "URL Protocol", 0, winreg.REG_SZ, "")
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER,
+                              rf"{PROTOCOL_REG_PATH}\shell\open\command") as key:
+            winreg.SetValueEx(key, "", 0, winreg.REG_SZ, _launch_command('"%1"'))
+    except OSError:
+        # Losing this costs a toast click, not the app -- never fail startup.
+        pass
+
+
+_EVENT_MODIFY_STATE = 0x0002
+_WAIT_OBJECT_0 = 0x00000000
+_INFINITE = 0xFFFFFFFF
+
+
+def _kernel32():
+    """kernel32 with the three event calls fully declared.
+
+    The declarations are not optional. A HANDLE is 64-bit on a 64-bit build,
+    but ctypes defaults every return type to C int -- so an undeclared
+    CreateEventW silently truncates the handle to 32 bits, and the wait that
+    follows blocks on a handle that isn't the event. It fails invisibly,
+    because a truncated handle is usually still a plausible-looking number.
+    """
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateEventW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.BOOL,
+                                 wintypes.LPCWSTR]
+    k32.CreateEventW.restype = wintypes.HANDLE
+    k32.OpenEventW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
+    k32.OpenEventW.restype = wintypes.HANDLE
+    k32.SetEvent.argtypes = [wintypes.HANDLE]
+    k32.SetEvent.restype = wintypes.BOOL
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    k32.CloseHandle.restype = wintypes.BOOL
+    k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    k32.WaitForSingleObject.restype = wintypes.DWORD
+    return k32
+
+
+def signal_running_instance():
+    """Ask an already-running copy to show its window. True if one heard.
+
+    False means nothing was listening, which the caller has to tell apart from
+    success: it means the app isn't running, so the click should start it
+    rather than being swallowed.
+    """
+    try:
+        k32 = _kernel32()
+        handle = k32.OpenEventW(_EVENT_MODIFY_STATE, False, SHOW_EVENT_NAME)
+        if not handle:
+            return False
+        try:
+            return bool(k32.SetEvent(handle))
+        finally:
+            k32.CloseHandle(handle)
+    except OSError:
+        return False
+
+
+def create_show_event():
+    """Create the event other instances signal to ask us to show ourselves.
+
+    A named event rather than a polled flag file or a socket: waiting costs
+    nothing while idle, there's no firewall prompt for a localhost port, and
+    nothing is left on disk to go stale if the app is killed. Returns None if
+    it can't be created, which just means toast clicks won't reach a running
+    instance -- Windows still starts a fresh one.
+    """
+    try:
+        # Auto-reset and initially unsignalled, so each request wakes the wait
+        # exactly once and resets itself with no bookkeeping here.
+        return _kernel32().CreateEventW(None, False, False, SHOW_EVENT_NAME) or None
+    except OSError:
+        return None
+
+
+def wait_for_show_request(handle):
+    """Block until someone signals the show event. False if the wait broke,
+    which the caller should treat as "stop waiting" rather than retry -- a
+    failing wait returns instantly and would otherwise spin a core."""
+    try:
+        return _kernel32().WaitForSingleObject(handle, _INFINITE) == _WAIT_OBJECT_0
+    except OSError:
+        return False
 
 
 # ── Toast notifications ──────────────────────────────────────────────
@@ -146,6 +262,11 @@ def send_toast(title, body, launch_url=None):
             msg=body,
             duration="long",
             icon=_TOAST_ICON,
+            # Clicking the toast body raises the app. The Forge link stays on
+            # its own button: the body is the much larger target, and "show me
+            # the thing that just notified me" is the commoner intent -- a
+            # toast listing several mods has no single page to open anyway.
+            launch=SHOW_URI,
         )
         if launch_url:
             toast.add_actions(label="View on Forge", launch=launch_url)
