@@ -98,7 +98,7 @@ Click **Local Mods** to check your own installed mods against the Forge — enti
 ### Additional features
 
 - **Run on Startup** — One-click toggle to launch silently in the background when Windows starts
-- **Thumbnail caching** — Mod thumbnails are cached to disk and auto-purged after 3 days; mods with no uploaded thumbnail get the same wireframe placeholder icon shown on the Forge itself, instead of a blank box
+- **Thumbnail caching** — Mod thumbnails are cached to disk for 30 days; mods with no uploaded thumbnail, or whose thumbnail can't be fetched, get a category-colored placeholder icon instead of a blank box. Forge thumbnail loading may be unreliable at times — the placeholder is what you'll see when that happens
 - **Unpublished mod detection** — Mods removed from the Forge are automatically cleared from the display, verified in a single batched lookup rather than one request per mod
 - **Fails safe, never guesses** — Ambiguous matches are reported as unmatched rather than guessed at, and any network failure leaves the display untouched instead of hiding mods
 - **Low resource usage** — Connection pooling, shared fonts, a smart timer that sleeps when the window is hidden, and state writes skipped when nothing changed
