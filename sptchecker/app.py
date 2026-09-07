@@ -682,7 +682,7 @@ class SPTCheckerApp:
 
             for mod in display_new + display_upd:
                 pil = download_thumb(mod.get("thumb_url"))
-                mod["_pil"] = pil if pil else placeholder_thumb()
+                mod["_pil"] = pil if pil else placeholder_thumb(mod.get("category"))
 
             prev_new_links = {m["link"] for m in prev_new}
 
@@ -833,7 +833,7 @@ class SPTCheckerApp:
             # Thumbnails come from the on-disk cache; a miss can't be fetched
             # while the site is unreachable, so it falls back to a placeholder.
             pil = download_thumb(mod.get("thumb_url"))
-            mod["_pil"] = pil if pil else placeholder_thumb()
+            mod["_pil"] = pil if pil else placeholder_thumb(mod.get("category"))
             mod["is_fresh"] = False
         self._new_sig = self._render_column(
             self._new_frame, cached_new, self._new_sig, False,

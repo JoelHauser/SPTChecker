@@ -20,7 +20,7 @@ CACHE_DIR = DATA_DIR / "thumb_cache"
 # baseline the self-update check compares releases against. version_info.py
 # and the .spec still carry their own copy, since PyInstaller reads those at
 # build time and can't import this -- keep all three in step when bumping.
-APP_VERSION = "3.4.3"
+APP_VERSION = "3.4.4"
 
 # This app's own listing on the Forge -- where users actually download it, so
 # it's the version that matters for "am I out of date". Checked through the
@@ -75,7 +75,14 @@ DISPLAY_FIELDS = (
     "title", "link", "author", "author_id", "version", "category", "thumb_url", "description",
     "full_description", "changelog", "author_since",
 )
-THUMB_MAX_AGE_DAYS = 3
+# The Forge's R2 image storage is taking excess external traffic and the
+# maintainer is treating this app as part of that load (clodan, 2026-09-07).
+# They've added a 1 month edge cache in front of R2 on their end; matching
+# that locally means a thumbnail is fetched from R2 roughly once a month per
+# install instead of every 3 days -- a ~10x cut in our own repeat requests.
+# Thumbnails are tiny (52x52 JPEGs) so the extra retention costs negligible
+# disk. Do not lower this without confirming the storage pressure has eased.
+THUMB_MAX_AGE_DAYS = 30
 NEW_AUTHOR_DAYS = 60
 TOP_STATS_WINDOW_DAYS = 30
 TREND_WINDOW_DAYS = 30

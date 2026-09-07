@@ -10,11 +10,12 @@ from io import BytesIO
 from PIL import Image, ImageDraw, ImageOps
 
 from .config import (
-    CACHE_DIR, CARD_BG, DATA_DIR, HOST_MIGRATIONS, MIGRATED_URL_FIELDS,
-    SEPARATOR, STATE_FILE, TEXT_DIM, THUMB_MAX_AGE_DAYS, THUMB_SIZE,
-    TOP_STATS_WINDOW_DAYS, TREND_WINDOW_DAYS,
+    CACHE_DIR, CARD_BG, CATEGORY_COLOR_DEFAULT, CATEGORY_COLORS, DATA_DIR,
+    HOST_MIGRATIONS, MIGRATED_URL_FIELDS, SEPARATOR, STATE_FILE, TEXT_DIM,
+    THUMB_MAX_AGE_DAYS, THUMB_SIZE, TOP_STATS_WINDOW_DAYS, TREND_WINDOW_DAYS,
 )
 from .feed import media_request
+from .theme import blend
 from .utils import parse_dt
 
 
@@ -233,21 +234,33 @@ _PLACEHOLDER_ICON_SEGMENTS = [
     ((3, 16.5), (3, 14.25)),
 ]
 _PLACEHOLDER_SUPERSAMPLE = 4
-_placeholder_img = None
+_placeholder_imgs = {}
+
+# How much of the category's accent color (the same hue already on the
+# card's border/rail) tints the placeholder panel, mixed into SEPARATOR
+# rather than toward white -- this keeps the panel in the same dark range
+# TEXT_DIM was chosen to read against, so the glyph stays legible for every
+# category instead of needing a per-category text color.
+_PLACEHOLDER_TINT_ALPHA = 0.35
 
 
-def placeholder_thumb():
+def placeholder_thumb(category=None):
     """Render the same wireframe-cube "no thumbnail" placeholder the Forge
-    website shows, via PIL supersample + LANCZOS downscale for anti-aliasing
-    (Tk/raw-bitmap primitives look jagged at this size otherwise). The
-    output is deterministic and this is called per mod-without-thumbnail on
-    every check cycle, so render once and reuse."""
-    global _placeholder_img
-    if _placeholder_img is not None:
-        return _placeholder_img
+    website shows, tinted by the mod's category color so a run of fetch
+    failures (e.g. the Forge blocking external image traffic) still lets
+    cards be told apart at a glance instead of turning into a wall of
+    identical gray tiles. Drawn via PIL supersample + LANCZOS downscale for
+    anti-aliasing (Tk/raw-bitmap primitives look jagged at this size
+    otherwise). Deterministic per category and called per mod-without-
+    thumbnail on every check cycle, so render once per category and reuse."""
+    global _placeholder_imgs
+    if category in _placeholder_imgs:
+        return _placeholder_imgs[category]
     w, h = THUMB_SIZE
     big_w, big_h = w * _PLACEHOLDER_SUPERSAMPLE, h * _PLACEHOLDER_SUPERSAMPLE
-    img = Image.new("RGB", (big_w, big_h), SEPARATOR)
+    accent = CATEGORY_COLORS.get(category, CATEGORY_COLOR_DEFAULT)
+    panel_bg = blend(accent, SEPARATOR, _PLACEHOLDER_TINT_ALPHA)
+    img = Image.new("RGB", (big_w, big_h), panel_bg)
     draw = ImageDraw.Draw(img)
 
     icon_px = min(big_w, big_h) * 0.55
@@ -267,8 +280,9 @@ def placeholder_thumb():
         for px, py in (p0, p1):
             draw.ellipse([px - r, py - r, px + r, py + r], fill=TEXT_DIM)
 
-    _placeholder_img = img.resize((w, h), Image.LANCZOS)
-    return _placeholder_img
+    result = img.resize((w, h), Image.LANCZOS)
+    _placeholder_imgs[category] = result
+    return result
 
 
 def purge_old_thumbs():

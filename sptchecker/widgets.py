@@ -825,17 +825,18 @@ class StatsWindow(FramelessPopup):
             webbrowser.open(fallback_link)
 
 
-_local_scan_placeholder_photo = None
+_local_scan_placeholder_photos = {}
 
 
-def _local_scan_placeholder():
+def _local_scan_placeholder(category=None):
     """Shared placeholder thumbnail for local-scan result cards -- these mods
-    aren't fetched from the Forge feed, so there's no thumbnail URL to use."""
-    global _local_scan_placeholder_photo
-    if _local_scan_placeholder_photo is None:
-        _local_scan_placeholder_photo = ImageTk.PhotoImage(
-            rounded_photo(placeholder_thumb()))
-    return _local_scan_placeholder_photo
+    aren't fetched from the Forge feed, so there's no thumbnail URL to use.
+    Cached per category since placeholder_thumb() now tints its panel with
+    the category's accent color."""
+    if category not in _local_scan_placeholder_photos:
+        _local_scan_placeholder_photos[category] = ImageTk.PhotoImage(
+            rounded_photo(placeholder_thumb(category)))
+    return _local_scan_placeholder_photos[category]
 
 
 class LocalScanSettingsWindow(FramelessPopup):
@@ -1123,7 +1124,8 @@ class LocalScanSettingsWindow(FramelessPopup):
                 }
                 accent = CATEGORY_COLORS.get(mod["category"], CATEGORY_COLOR_DEFAULT)
                 pil = r.get("_pil")
-                photo = ImageTk.PhotoImage(rounded_photo(pil)) if pil else _local_scan_placeholder()
+                photo = (ImageTk.PhotoImage(rounded_photo(pil)) if pil
+                          else _local_scan_placeholder(mod["category"]))
                 self._photos.append(photo)
                 ModCard(self._results_frame, mod, accent, photo,
                         on_endorse=self._mark_endorsed).pack(

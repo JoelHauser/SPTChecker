@@ -168,16 +168,18 @@ Then `python -m PyInstaller --noconfirm SPTModChecker_v<VER>.spec`.
 
 **Update this section as work completes.**
 
-- Version **3.4.3**, working branch **`checkertest`** (not `main`).
+- Version **3.4.4**, working branch **`checkertest`** (not `main`).
 - 3.4.0 was a full visual overhaul: `theme.py` is new, and cards, header,
   stats, popups and window sizing were all rebuilt. 3.4.1 fixed two bugs it
   introduced (popup close button activating the control underneath; change
   notes clipping their last lines). 3.4.2 stopped a newly published mod
   filling a slot in both columns and firing two toasts.
-- **3.4.3 is built and smoke-tested**: `dist/SPTModChecker_v3.4.3.exe` plus a
+- **3.4.4 is built and smoke-tested**: `dist/SPTModChecker_v3.4.4.exe` plus a
   matching `.zip` (the exe alone at the zip root, same shape as previous
-  releases), tagged `V3.4.3`. The binary still has to be attached to a GitHub
+  releases), tagged `V3.4.4`. The binary still has to be attached to a GitHub
   release and uploaded to the Forge by hand -- `gh` is not installed here.
+  It carries the R2-traffic response described in Open Items: the 30-day
+  thumbnail cache and category-tinted placeholders.
 - No 3.4.1 exe was ever built -- `dist/` went straight from 3.3.3 to 3.4.2,
   so 3.4.1's two fixes first reached users in 3.4.2.
 - 3.4.3 made a toast click raise the window (see **Toast activation**).
@@ -199,3 +201,17 @@ Then `python -m PyInstaller --noconfirm SPTModChecker_v<VER>.spec`.
   collapse the whole `kind` parameter.
 - **~230 MB of stale `build/` folders** for versions 2.1.1 – 3.0.0. Gitignored
   and regenerable, but they sync to OneDrive for no reason.
+- **The Forge's R2 image storage is under cost pressure from external
+  consumers** (clodan, 2026-09-07 in Discord) and this app is caught in
+  whatever rule they use to curb it -- thumbnail fetches may start erroring
+  outright, with no alternative source planned. `THUMB_MAX_AGE_DAYS` was
+  raised 3 → 30 to match the 1 month edge cache clodan added on their end,
+  cutting repeat R2 hits per install by roughly 10x. `placeholder_thumb()`
+  (`state.py`) now tints its panel with the mod's `CATEGORY_COLORS` accent
+  instead of a flat `SEPARATOR` gray and caches one rendering per category,
+  so a run of fetch failures still reads as distinct cards instead of a wall
+  of identical gray tiles -- `download_thumb` already failed soft to this on
+  any fetch error, that part needed no change. If clodan mentions a pre-sized
+  thumbnail variant (today `download_thumb` pulls the full-resolution image
+  from R2 and downsizes to 52x52 locally, which is more bytes than
+  necessary), switching to it would cut per-request bytes too.
