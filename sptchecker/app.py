@@ -11,7 +11,7 @@ from PIL import Image, ImageTk
 from .config import (
     ACCENT_DANGER, ACCENT_NEW, ACCENT_UPD, APP_VERSION, BG, BORDER, CARD_BG,
     CATEGORY_COLOR_DEFAULT, CATEGORY_COLORS,
-    CHECK_INTERVAL_MINUTES, DEFAULT_SPT_VERSION_FILTER,
+    CHECK_INTERVAL_CHOICES, CHECK_INTERVAL_MINUTES, DEFAULT_SPT_VERSION_FILTER,
     DISPLAY_FIELDS, FORGE_MOD_PAGE, FORGE_URL, LAYOUT_VERSION, MAX_PER_CATEGORY,
     SEPARATOR, SPT_VERSIONS_REFRESH_HOURS, STATE_FIELDS, STATUS_BG, TEXT,
     TEXT_BRIGHT, TEXT_DIM, TEXT_FAINT, UPDATE_CHECK_INTERVAL_HOURS,
@@ -102,7 +102,7 @@ class SPTCheckerApp:
 
         self.root.protocol("WM_DELETE_WINDOW", self._hide_to_tray)
 
-        self.root.after(400, self._check_now)
+        self.root.after(400, self._start_schedule)
         # Local mod scanning never runs on its own, even with the feature
         # enabled and a folder already set -- only an explicit click on
         # Scan Now (in _show_local_scan) starts one.
@@ -307,8 +307,13 @@ class SPTCheckerApp:
         self._lbl_status.pack(side="left")
 
         self._lbl_timer = tk.Label(inner, text="", font=font(8),
-                                   fg=TEXT_FAINT, bg=STATUS_BG)
+                                   fg=TEXT_FAINT, bg=STATUS_BG, cursor="hand2")
         self._lbl_timer.pack(side="right")
+        # The schedule is changed from the countdown that shows it, rather than
+        # from yet another control in a header already measured to its limit.
+        self._lbl_timer.bind("<Button-1>", self._show_interval_menu)
+        self._lbl_timer.bind("<Enter>", lambda _e: self._lbl_timer.configure(fg=TEXT))
+        self._lbl_timer.bind("<Leave>", lambda _e: self._lbl_timer.configure(fg=TEXT_FAINT))
 
         # Left unbuilt -- the update chip only appears once a newer release is
         # actually found, so the bar stays quiet for anyone already current.
@@ -1043,7 +1048,13 @@ class SPTCheckerApp:
         # state so the window still shows the most recent known mods (stale,
         # but far better than blank) alongside the reason it couldn't refresh.
         self._show_cached_results()
-        self._next_check_ts = time.time() + 300
+        interval = self._check_interval()
+        # Retried sooner than the schedule, since a failed check leaves the
+        # columns stale -- but in proportion to it. Five minutes suits the
+        # 15-minute default; a weekly schedule retrying that often through a
+        # day-long outage would be hundreds of requests from someone who asked
+        # for one a week. With automatic checks off, nothing retries on its own.
+        self._next_check_ts = time.time() + max(5, interval // 12) * 60 if interval else None
         self._tick_timer()
         self._run_pending_recheck()
 
@@ -1063,22 +1074,52 @@ class SPTCheckerApp:
         """
         if self._new_sig is not None or self._upd_sig is not None:
             return
-        cached_new = self.state.get("display_new", [])
-        cached_upd = self.state.get("display_updated", [])
+        cached = self._load_cached_results()
+        if cached:
+            self._render_cached_results(*cached)
+
+    def _bg_load_cached_results(self):
+        """_show_cached_results for a launch that isn't checking yet, with the
+        thumbnails loaded off the UI thread. With the Forge reachable a cache
+        miss really is fetched -- and after an update that bumps the thumbnail
+        cache every card misses -- so loading them on the UI thread would
+        freeze the window for as long as the fetches took."""
+        cached = self._load_cached_results()
+        if cached:
+            self.root.after(0, self._render_cached_results, *cached)
+
+    def _load_cached_results(self):
+        """The saved columns with thumbnails attached, or None if nothing is
+        saved. Works on copies and touches no widgets, so it can run on any
+        thread -- a PIL image left on a state dict would break the next save."""
+        cached_new = [dict(m) for m in self.state.get("display_new", [])]
+        cached_upd = [dict(m) for m in self.state.get("display_updated", [])]
         if not cached_new and not cached_upd:
-            return
+            return None
         for mod in cached_new + cached_upd:
             # Thumbnails come from the on-disk cache; a miss can't be fetched
             # while the site is unreachable, so it falls back to a placeholder.
             pil = download_thumb(mod.get("thumb_url"))
             mod["_pil"] = pil if pil else placeholder_thumb(mod.get("category"))
             mod["is_fresh"] = False
+        return cached_new, cached_upd
+
+    def _render_cached_results(self, cached_new, cached_upd):
+        # Checked again here: loaded in the background, a check may have
+        # rendered live results before these arrived.
+        if self._new_sig is not None or self._upd_sig is not None:
+            return
         self._new_sig = self._render_column(
             self._new_frame, cached_new, self._new_sig, False,
             "", "No new mods detected yet.")
         self._upd_sig = self._render_column(
             self._upd_frame, cached_upd, self._upd_sig, False,
             "", "No updates detected yet.")
+        # Only _apply used to set these, so saved cards shown after a failed
+        # first check -- and now at a launch that isn't due a check -- sat
+        # under headings with no counts.
+        self._new_count.configure(text=str(len(cached_new)) if cached_new else "")
+        self._upd_count.configure(text=str(len(cached_upd)) if cached_upd else "")
 
     def _render_column(self, frame, mods, prev_sig, first_run, baseline_text, empty_text):
         """Render one column, returning its new content signature. When the
@@ -1123,9 +1164,109 @@ class SPTCheckerApp:
 
     # ── Timer ──────────────────────────────────────────────────────────
 
-    def _schedule_next(self):
-        self._next_check_ts = time.time() + CHECK_INTERVAL_MINUTES * 60
+    # state["check_interval_minutes"] holds one of CHECK_INTERVAL_CHOICES, or 0
+    # for no automatic checks; absent means CHECK_INTERVAL_MINUTES.
+
+    def _check_interval(self):
+        """Minutes between automatic checks, or 0 when they're switched off."""
+        minutes = self.state.get("check_interval_minutes", CHECK_INTERVAL_MINUTES)
+        if minutes == 0 or minutes in CHECK_INTERVAL_CHOICES:
+            return minutes
+        # Hand-edited, or a value a later build stopped offering: never let it
+        # poll faster than the floor.
+        return CHECK_INTERVAL_MINUTES
+
+    def _last_check_ts(self):
+        try:
+            return datetime.fromisoformat(self.state["last_check"]).timestamp()
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def _start_schedule(self):
+        """This session's first check if one is due, or else the wait for it.
+
+        Launching doesn't reset the clock: with a long interval, checking on
+        every launch would turn "every 24 hours" into every reboot, and a
+        restart moments after a check would only repeat it. The columns show
+        what the last check found meanwhile. With automatic checks off, nothing
+        is fetched until Check Now.
+        """
+        interval = self._check_interval()
+        last = self._last_check_ts()
+        if interval and (last is None or time.time() >= last + interval * 60):
+            self._check_now()
+            return
+        waiting = ("Automatic checks are off.\nCheck Now looks for new mods."
+                   if not interval else "Waiting for the next check.")
+        self._set_placeholder(self._new_frame, waiting)
+        self._set_placeholder(self._upd_frame, waiting)
+        threading.Thread(target=self._bg_load_cached_results, daemon=True).start()
+        if last is not None:
+            stamp = datetime.fromtimestamp(last)
+            when = stamp.strftime("%H:%M" if stamp.date() == datetime.now().date() else "%b %d, %H:%M")
+            self._lbl_status.configure(
+                text=f"Last checked {when}   ·   tracking {len(self.state.get('mods', {})):,} mods")
+        else:
+            self._lbl_status.configure(text="Automatic checks are off")
+        self._next_check_ts = last + interval * 60 if interval else None
         self._tick_timer()
+
+    def _schedule_next(self):
+        interval = self._check_interval()
+        self._next_check_ts = time.time() + interval * 60 if interval else None
+        self._tick_timer()
+
+    @staticmethod
+    def _interval_name(minutes):
+        """15 -> "15 minutes", 60 -> "hour", 1440 -> "24 hours", 10080 -> "week"."""
+        if minutes % 10080 == 0:
+            count, unit = minutes // 10080, "week"
+        elif minutes % 60 == 0:
+            count, unit = minutes // 60, "hour"
+        else:
+            count, unit = minutes, "minute"
+        return unit if count == 1 else f"{count} {unit}s"
+
+    def _show_interval_menu(self, _e=None):
+        current = self._check_interval()
+        items = [(self._menu_label(f"Check every {self._interval_name(m)}", m == current),
+                  lambda m=m: self._set_check_interval(m)) for m in CHECK_INTERVAL_CHOICES]
+        items += [("-", None), (self._menu_label("Only when I click Check Now", current == 0),
+                                lambda: self._set_check_interval(0))]
+        lbl = self._lbl_timer
+        menu = ContextMenu(self.root, items)
+        menu.update_idletasks()
+        # Opened upward and right-aligned: the countdown sits in the window's
+        # bottom-right corner, where a menu hung below it would leave the window.
+        menu.show(lbl.winfo_rootx() + lbl.winfo_width() - menu.winfo_reqwidth(),
+                  lbl.winfo_rooty() - menu.winfo_reqheight() - 4)
+
+    def _set_check_interval(self, minutes):
+        if minutes == self._check_interval():
+            return
+        self.state["check_interval_minutes"] = minutes
+        save_state(self.state)
+        if self._checking:
+            # The running check schedules its successor from the new value when
+            # it lands (_apply -> _schedule_next).
+            return
+        # Measured from the last check, not from now: shortening the interval
+        # past the time already waited checks straight away.
+        last = self._last_check_ts()
+        self._next_check_ts = (last or 0) + minutes * 60 if minutes else None
+        self._tick_timer()
+
+    @staticmethod
+    def _countdown(seconds):
+        """The countdown: "14:59" under an hour, then "in 3h 59m", "in 6d 23h"."""
+        if seconds < 3600:
+            m, s = divmod(seconds, 60)
+            return f"{m:02d}:{s:02d}"
+        hours, rest = divmod(seconds, 3600)
+        if hours < 24:
+            return f"in {hours}h {rest // 60:02d}m"
+        days, hours = divmod(hours, 24)
+        return f"in {days}d {hours}h"
 
     def _tick_timer(self):
         # _do_show calls this directly (in addition to whatever chain is
@@ -1137,17 +1278,20 @@ class SPTCheckerApp:
             self._timer_after_id = None
 
         if self._next_check_ts is None:
+            self._lbl_timer.configure(text="Automatic checks off  ▾")
             return
         left = max(0, int(self._next_check_ts - time.time()))
         if left <= 0:
             self._check_now()
             return
         if self._visible:
-            m, s = divmod(left, 60)
-            self._lbl_timer.configure(text=f"Next check {m:02d}:{s:02d}")
+            self._lbl_timer.configure(text=f"Next check {self._countdown(left)}  ▾")
             self._timer_after_id = self.root.after(1000, self._tick_timer)
         else:
-            self._timer_after_id = self.root.after(left * 1000, self._tick_timer)
+            # Woken at least hourly while hidden, so a days-long wait is
+            # re-measured against the clock rather than left to one timer
+            # across sleep and resume.
+            self._timer_after_id = self.root.after(min(left, 3600) * 1000, self._tick_timer)
 
     # ── Run ────────────────────────────────────────────────────────────
 

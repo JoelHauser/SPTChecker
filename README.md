@@ -10,7 +10,7 @@ A lightweight Windows desktop app that watches the [SPT Forge](https://sp-mod.co
 
 ### What it does
 
-SPTChecker runs quietly in your system tray and checks the Forge every 15 minutes for changes. When it finds something, it sends a Windows toast notification and updates the UI — no need to manually browse the Forge to stay up to date.
+SPTChecker runs quietly in your system tray and checks the Forge for changes every 15 minutes, or on whatever schedule you pick. When it finds something, it sends a Windows toast notification and updates the UI — no need to manually browse the Forge to stay up to date.
 
 It can also do the reverse: point it at your SPT install folder and it'll scan your actually-installed mods and tell you which ones have updates waiting (see **Local mod scanning** below) — entirely opt-in, off by default.
 
@@ -20,7 +20,7 @@ It can also do the reverse: point it at your SPT install folder and it'll scan y
 
 1. On first launch, the app populates both columns — **New Mods** and **Recently Updated**, mirroring the website's own tabs.
 2. Both columns are built from the Forge's RSS feeds and public API — **no HTML scraping**.
-3. Every 15 minutes it re-fetches and compares against stored state — matching the shortest cache window sp-mod.com serves, since checking more often can't surface anything newer.
+3. Every 15 minutes it re-fetches and compares against stored state — matching the shortest cache window sp-mod.com serves, since checking more often can't surface anything newer. Click the countdown in the status bar to check every hour, 4, 12 or 24 hours, or once a week instead, or only when you click **Check Now**. Restarting the app doesn't reset the schedule, so a daily check stays daily even if you reboot more often.
 4. Newly seen mods are flagged **New**. The Recently Updated column tracks fresh releases of existing mods.
 5. If a mod author unpublishes their mod, it's automatically removed from the display.
 6. Results persist across checks and restarts — new findings push older entries down in a rolling history (up to 7 per column).
@@ -91,7 +91,7 @@ Click **Local Mods** to check your own installed mods against the Forge — enti
 
 - **Forge status indicator** — A dot shows whether the last check reached the Forge OK (green) or failed (red); hover for details
 - **Update available** — A green dot appears when a newer SPTChecker has been posted to the Forge; click it to open the mod page. Invisible when you're up to date, and it only ever tells you — nothing installs itself
-- **Live countdown** — Shows time remaining until the next automatic check
+- **Live countdown** — Shows time remaining until the next automatic check; click it to change how often checks run, or to turn automatic checks off
 - **Running summary** — Shows the baseline mod count on first run, or how many new/updated mods were found (and total tracked) on each subsequent check
 
 ---

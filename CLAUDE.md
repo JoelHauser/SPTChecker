@@ -74,7 +74,9 @@ Each of these cost real debugging time. They are not hypothetical.
   maintainer has turned on bot countermeasures before. Never bypass
   `_forge_request`.
 - **15 minutes is the poll floor**, matching the shortest cache window
-  sp-mod.com serves. Checking faster spends requests on unchanged bytes.
+  sp-mod.com serves. Checking faster spends requests on unchanged bytes. The
+  status bar's schedule menu (`config.CHECK_INTERVAL_CHOICES`) only offers
+  intervals at or above it.
 - `published_at` (API) is the true publish time; RSS `pubDate` is when the
   listing was *created*, often a day earlier. The stats chart counts new
   publications only, never updates.
@@ -173,6 +175,9 @@ Then `python -m PyInstaller --noconfirm SPTModChecker_v<VER>.spec`.
 - **Smoke-test the exe before shipping.** Launch it with `--background`, confirm
   it survives ~15s and wrote a fresh `last_check` to the state file. A frozen
   build can fail at runtime on a missing import even when the build succeeded.
+  A launch within the check interval of the last check doesn't check at all,
+  so smoke-test against a fresh data dir (point `LOCALAPPDATA` at an empty
+  folder) or a `last_check` older than the interval.
   Kill the whole process tree — the PyInstaller bootloader spawns a child that
   outlives a plain kill of the parent.
 - `dist/` and `build/` are gitignored; releases go to the Forge and GitHub.
@@ -210,11 +215,19 @@ Then `python -m PyInstaller --noconfirm SPTModChecker_v<VER>.spec`.
   each day on the check thread -- not a timer, because the default can't
   resolve without it. `last_check_spt_version` is the resolved release the
   last check used, so a new release moving "latest" re-baselines like any
-  other filter change. Mod records taken under a filter carry `spt_version`. `_bg_check` stays quiet on the check
-  after the filter changes, and never compares a version against one recorded
-  under a different filter -- the same mod is legitimately 1.3.0 for one SPT
-  and 0.9.3 for another, and comparing them was a toast and a downgrade arrow
-  for every such mod.
+  other filter change. Mod records taken under a filter carry `spt_version`.
+  `_bg_check` stays quiet on the check after the filter changes, and never
+  compares a version against one recorded under a different filter -- the
+  same mod is legitimately 1.3.0 for one SPT and 0.9.3 for another, and
+  comparing them was a toast and a downgrade arrow for every such mod.
+- **Check schedule** (status bar countdown, unreleased). State key
+  `check_interval_minutes`: one of `config.CHECK_INTERVAL_CHOICES`, or 0 for
+  off; anything else falls back to 15. A launch no longer always checks:
+  `_start_schedule` checks only if `last_check` is older than the interval,
+  otherwise it shows the saved columns (thumbnails loaded on a thread, since
+  a cache miss would be fetched on the UI thread) and resumes the countdown.
+  A failed check retries after `max(5, interval // 12)` minutes, and never
+  when checks are off.
 
 ### Open items
 

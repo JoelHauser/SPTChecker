@@ -71,6 +71,9 @@ MIGRATED_URL_FIELDS = ("link", "thumb_url")
 # Polling every 5 minutes made two of every three checks pure waste, against a
 # host that had already turned on bot countermeasures once.
 CHECK_INTERVAL_MINUTES = 15
+# What the status bar's schedule menu offers, in minutes. Nothing shorter than
+# CHECK_INTERVAL_MINUTES: that is the floor, not just the default.
+CHECK_INTERVAL_CHOICES = (15, 60, 240, 720, 1440, 10080)
 # The SPT release the feed is filtered for until someone picks one: the
 # newest release, followed as new ones come out. "all" is the unfiltered feed;
 # app._feed_spt_version lists the other choices.
