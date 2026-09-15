@@ -13,12 +13,12 @@ from .config import (
     CATEGORY_COLOR_DEFAULT, CATEGORY_COLORS,
     CHECK_INTERVAL_MINUTES,
     DISPLAY_FIELDS, FORGE_MOD_PAGE, FORGE_URL, LAYOUT_VERSION, MAX_PER_CATEGORY,
-    SEPARATOR, STATE_FIELDS, STATUS_BG, TEXT, TEXT_BRIGHT, TEXT_DIM, TEXT_FAINT,
-    UPDATE_CHECK_INTERVAL_HOURS,
+    SEPARATOR, SPT_VERSIONS_REFRESH_HOURS, STATE_FIELDS, STATUS_BG, TEXT,
+    TEXT_BRIGHT, TEXT_DIM, TEXT_FAINT, UPDATE_CHECK_INTERVAL_HOURS,
     WINDOW_DEFAULT_GEOMETRY, WINDOW_DEFAULT_WIDTH, WINDOW_MIN_HEIGHT,
     WINDOW_MIN_WIDTH,
 )
-from .feed import ForgeBlocked, fetch_feeds, unpublished_links
+from .feed import ForgeBlocked, fetch_feeds, fetch_spt_versions, unpublished_links
 from .localmods import detect_spt_version, scan_installed_mods
 from .matcher import match_local_mods
 from .platform import (
@@ -34,8 +34,8 @@ from .theme import (
 )
 from .update import check_for_update
 from .widgets import (
-    CARD_GAP, LocalScanSettingsWindow, ModCard, StatsWindow, build_scroll_area,
-    card_pitch,
+    CARD_GAP, ContextMenu, LocalScanSettingsWindow, ModCard, StatsWindow,
+    build_scroll_area, card_pitch,
 )
 
 # Layout constants shared between the widgets that use them and _size_to_fit,
@@ -68,6 +68,7 @@ class SPTCheckerApp:
 
         self._photos = {}  # frame -> PhotoImage refs for its current cards
         self._checking = False
+        self._recheck_pending = False
         self._scanning = False
         self._local_scan_window = None
         self._next_check_ts = None
@@ -208,6 +209,13 @@ class SPTCheckerApp:
         self._tooltip_id = None
         self._tooltip_win = None
         self._bind_tooltip(self._btn, "Check the Forge for new or updated mods")
+
+        # Beside Check Now rather than among the popups: it decides what every
+        # check fetches, and its label is the only sign on screen that the
+        # columns are being filtered at all.
+        self._spt_btn = flat_button(hdr, self._spt_picker_text(), self._show_spt_menu,
+                                    bg=STATUS_BG)
+        self._spt_btn.pack(side="right", padx=(0, 8))
 
         flat_button(hdr, "Local Mods", self._show_local_scan,
                     bg=STATUS_BG).pack(side="right", padx=(0, 8))
@@ -403,6 +411,137 @@ class SPTCheckerApp:
         stats = compute_stats(self.state.get("mods", {}))
         StatsWindow(self.root, stats)
 
+    # ── SPT version filter ─────────────────────────────────────────────
+
+    # state["spt_version_filter"] holds the choice: absent for every version,
+    # "auto" to follow the Local Mods install, or a release like "4.0.13".
+
+    def _feed_spt_version(self):
+        """The SPT release the feed is filtered to right now, or "" for none.
+
+        "auto" reads the installed server's version on every call rather than
+        remembering it, so upgrading SPT carries the filter along. With no
+        install to read, the feed goes unfiltered rather than empty -- the
+        picker says so, and a blank column would only look broken.
+        """
+        choice = self.state.get("spt_version_filter", "")
+        if choice != "auto":
+            return choice
+        path = self.state.get("spt_install_path", "")
+        return (detect_spt_version(path) if path else None) or ""
+
+    def _spt_picker_text(self):
+        # Kept short: the header's minimum width is measured from its controls,
+        # and "All SPT versions" cost every user 128px of it at 100% scaling --
+        # past the 720px default -- to label the state most of them never
+        # leave. The menu spells each option out in full.
+        choice = self.state.get("spt_version_filter", "")
+        version = self._feed_spt_version() or "All"
+        return f"SPT: {version}{' (auto)' if choice == 'auto' else ''}  ▾"
+
+    def _update_spt_picker(self):
+        self._spt_btn.configure(text=self._spt_picker_text())
+        # The button is sized by its label, so a longer one widens the header
+        # past the minimum measured at startup -- re-measure, or the controls
+        # can collide in a window dragged down to the old minimum.
+        self.root.minsize(self._min_width(), WINDOW_MIN_HEIGHT)
+
+    def _spt_release_lines(self):
+        """The cached SPT releases grouped by minor line, newest first:
+        [("4.1", ["4.1.5", ...]), ("4.0", ["4.0.13", ...]), ...]."""
+        lines = {}
+        for release in self.state.get("spt_versions", []):
+            lines.setdefault(release.rsplit(".", 1)[0], []).append(release)
+        return list(lines.items())
+
+    def _show_spt_menu(self):
+        """The picker's menu: every version, auto-detect, then one entry per
+        minor line that opens that line's releases.
+
+        Two levels because a flat list is 50 releases long -- taller than the
+        screen -- and the patch can't be dropped to shorten it: constraints are
+        decided per patch ("~4.0.12" covers 4.0.12 and 4.0.13 but not 4.0.11),
+        so offering only each line's newest release would filter for a release
+        the user isn't running.
+        """
+        choice = self.state.get("spt_version_filter", "")
+        path = self.state.get("spt_install_path", "")
+        detected = detect_spt_version(path) if path else None
+        if detected:
+            auto = f"Match my install ({detected})"
+        elif path:
+            auto = "Match my install (SPT not found)"
+        else:
+            auto = "Match my install (set its folder in Local Mods)"
+        items = [
+            (self._menu_label("All SPT versions", not choice), lambda: self._set_spt_filter("")),
+            (self._menu_label(auto, choice == "auto"), lambda: self._set_spt_filter("auto")),
+        ]
+        lines = self._spt_release_lines()
+        if lines:
+            items.append(("-", None))
+            for line, releases in lines:
+                items.append((self._menu_label(f"SPT {line}  ›", choice in releases),
+                              lambda line=line: self._show_spt_line_menu(line)))
+        self._show_spt_popup(items)
+
+    def _show_spt_line_menu(self, line):
+        choice = self.state.get("spt_version_filter", "")
+        releases = dict(self._spt_release_lines()).get(line, [])
+        self._show_spt_popup([(self._menu_label(r, r == choice),
+                               lambda r=r: self._set_spt_filter(r)) for r in releases])
+
+    @staticmethod
+    def _menu_label(text, selected):
+        # Marked after the text, not before it: the menu font is proportional,
+        # so a leading mark would knock the selected row out of line.
+        return f"{text}  ✓" if selected else text
+
+    def _show_spt_popup(self, items):
+        btn = self._spt_btn
+        menu = ContextMenu(self.root, items)
+        menu.update_idletasks()
+        # Right-aligned under the picker, which sits against the header's right
+        # edge -- hung from its left corner, a wide menu ran past the window.
+        menu.show(btn.winfo_rootx() + btn.winfo_width() - menu.winfo_reqwidth(),
+                  btn.winfo_rooty() + btn.winfo_height() + 4)
+
+    def _set_spt_filter(self, choice):
+        if choice == self.state.get("spt_version_filter", ""):
+            return
+        if choice:
+            self.state["spt_version_filter"] = choice
+        else:
+            self.state.pop("spt_version_filter", None)
+        save_state(self.state)
+        self._update_spt_picker()
+        self._recheck()
+
+    def _schedule_spt_versions_refresh(self, delay_ms=5000):
+        """Refresh the picker's list of SPT releases, then re-arm.
+
+        Fetched ahead of time so opening the picker never waits on the network,
+        but on its own long timer like the update check -- SPT releases are
+        rare, and riding the 15-minute mod poll would ask the same question
+        dozens of times a day. Delayed past startup so it never competes with
+        the first check.
+        """
+        self.root.after(delay_ms, lambda: threading.Thread(
+            target=self._bg_spt_versions_refresh, daemon=True).start())
+
+    def _bg_spt_versions_refresh(self):
+        # None on failure: the list already saved stays as it was.
+        releases = fetch_spt_versions()
+        if releases:
+            self.root.after(0, self._apply_spt_versions, releases)
+        self.root.after(0, self._schedule_spt_versions_refresh,
+                        SPT_VERSIONS_REFRESH_HOURS * 3600 * 1000)
+
+    def _apply_spt_versions(self, releases):
+        if releases != self.state.get("spt_versions"):
+            self.state["spt_versions"] = releases
+            save_state(self.state)
+
     # ── Local mod scan (opt-in) ───────────────────────────────────────
 
     def _show_local_scan(self):
@@ -448,6 +587,11 @@ class SPTCheckerApp:
     def _set_local_scan_path(self, path):
         self.state["spt_install_path"] = path
         save_state(self.state)
+        if self.state.get("spt_version_filter") == "auto":
+            # The feed takes its SPT version from this folder, so a different
+            # folder can mean a different release to filter for.
+            self._update_spt_picker()
+            self._recheck()
 
     def _scan_local_now(self):
         if self._scanning:
@@ -633,21 +777,55 @@ class SPTCheckerApp:
         self._lbl_status.configure(text="Fetching mods…")
         threading.Thread(target=self._bg_check, daemon=True).start()
 
+    def _recheck(self):
+        """Check for a setting that changes what a check fetches.
+
+        A check already running started under the old setting, and _check_now
+        ignores requests while one runs -- so without queueing, a change made
+        mid-check sat unapplied until the next scheduled check, 15 minutes of
+        the picker naming one SPT version while the columns showed another.
+        """
+        if self._checking:
+            self._recheck_pending = True
+        else:
+            self._check_now()
+
     @staticmethod
     def _strip_for_state(mods):
         return [{k: m[k] for k in DISPLAY_FIELDS if k in m} for m in mods]
 
     def _bg_check(self):
         try:
-            newest, updated = fetch_feeds()
+            spt_version = self._feed_spt_version()
+            newest, updated = fetch_feeds(spt_version)
             known = self.state.get("mods", {})
             first_run = len(known) == 0
-            prev_versions = {link: m.get("version", "") for link, m in known.items()}
+            # A different SPT version from the last check -- picked, or a
+            # detected install upgraded -- is a re-baseline, not a round of
+            # news. Both columns change wholesale with the filter, and none of
+            # it is the Forge's doing: announcing it was a toast for every mod
+            # in view.
+            refiltered = self.state.get("last_check_spt_version", "") != spt_version
+            # A mod's version only means something next to one recorded under
+            # the same filter. The same mod is legitimately 1.3.0 for 4.1 and
+            # 0.9.3 for 4.0 -- compared across filters that was a downgrade
+            # arrow and an "update" toast for every mod that keeps a line per
+            # SPT release.
+            prev_versions = {link: m.get("version", "") for link, m in known.items()
+                             if m.get("spt_version", "") == spt_version}
+            recorded_elsewhere = set(known) - set(prev_versions)
 
             for mod in newest + updated:
-                known[mod["link"]] = {k: mod[k] for k in STATE_FIELDS if k in mod}
+                record = {k: mod[k] for k in STATE_FIELDS if k in mod}
+                if spt_version:
+                    record["spt_version"] = spt_version
+                known[mod["link"]] = record
             self.state["mods"] = known
             self.state["last_check"] = datetime.now().isoformat()
+            if spt_version:
+                self.state["last_check_spt_version"] = spt_version
+            else:
+                self.state.pop("last_check_spt_version", None)
 
             prev_new = self.state.get("display_new", [])
 
@@ -704,13 +882,20 @@ class SPTCheckerApp:
                 is written to state, so an unchanged mod fails this test on
                 the very next cycle. A mod we hold no record of gets the
                 benefit of the doubt -- the updated feed says it changed and
-                we have no earlier version to contradict it.
+                we have no earlier version to contradict it. A mod recorded
+                only under a different SPT filter does not: that record is of
+                a different version line, so it can neither confirm nor rule
+                out a change, and "no record" would announce a mod that may
+                not have moved in months.
                 """
                 previous = prev_versions.get(mod["link"])
-                return previous is None or previous != mod.get("version", "")
+                if previous is None:
+                    return mod["link"] not in recorded_elsewhere
+                return previous != mod.get("version", "")
 
-            notify_new = [m for m in display_new if m["link"] not in prev_new_links] if not first_run else []
-            notify_upd = [m for m in display_upd if _version_moved(m)] if not first_run else []
+            quiet = first_run or refiltered
+            notify_new = [m for m in display_new if m["link"] not in prev_new_links] if not quiet else []
+            notify_upd = [m for m in display_upd if _version_moved(m)] if not quiet else []
 
             # Mark fresh mods for NEW badge
             fresh_new_links = {m["link"] for m in notify_new}
@@ -799,7 +984,13 @@ class SPTCheckerApp:
                 self._tray.icon = self._tray_icon_normal
                 self._tray.title = "SPTChecker — no changes"
 
+        if self.state.get("spt_version_filter") == "auto":
+            # The detected release can change between checks without the
+            # picker being touched -- SPT upgraded in place.
+            self._update_spt_picker()
+
         self._schedule_next()
+        self._run_pending_recheck()
 
     def _on_error(self, msg, prefix="Error: "):
         self._checking = False
@@ -815,6 +1006,14 @@ class SPTCheckerApp:
         self._show_cached_results()
         self._next_check_ts = time.time() + 300
         self._tick_timer()
+        self._run_pending_recheck()
+
+    def _run_pending_recheck(self):
+        """Start the check a mid-check setting change queued -- see _recheck.
+        Also after a failed check: the failure was under the old setting."""
+        if self._recheck_pending:
+            self._recheck_pending = False
+            self._check_now()
 
     def _show_cached_results(self):
         """Render the last successfully-fetched mods from saved state.
@@ -915,4 +1114,5 @@ class SPTCheckerApp:
 
     def run(self):
         self._schedule_update_check()
+        self._schedule_spt_versions_refresh()
         self.root.mainloop()

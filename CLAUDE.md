@@ -84,6 +84,21 @@ Each of these cost real debugging time. They are not hypothetical.
   the new column out of the updated one; without that it filled a slot in
   both and fired two toasts for one event. Roughly 12 of each 50-mod window
   overlap, so this is the common case, not an edge one.
+- **`filter[spt_version]` filters mods, never their versions.** The page holds
+  only mods with *a* compatible version, but `include=versions` still lists
+  all of them (newest first by version number, not date; capped near 10 per
+  mod, though the docs say 6). `_parse_api_mod` picks the one to show with
+  `utils.spt_version_satisfies`, and a mod with its own line per SPT release is
+  the common case -- 79 of 100 compatible mods sampled showed an older version
+  than their newest.
+- **Constraints are Composer semver, typed loosely.** `~4.0` means `<5.0.0`
+  (not npm's `<4.1.0`), and live listings carry `~4.`, `~4.1. > 4.1.1`,
+  `4.0.x` and `3.7.1 - 4.1.3`, all of which the Forge accepts. The ground truth
+  is the server itself: `GET /api/v0/spt/versions?filter[spt_version]=<c>`
+  returns the releases `<c>` allows. The evaluator matched it on every
+  constraint across 183 live listings -- re-run that comparison before changing
+  it. RSS carries no constraints at all, so `fetch_feeds` skips RSS while
+  filtering.
 
 ## Toast activation
 
@@ -187,6 +202,15 @@ Then `python -m PyInstaller --noconfirm SPTModChecker_v<VER>.spec`.
   it entering the updated column. The old rule missed a genuine update to a
   mod already sitting in the column, and announced unchanged mods that
   drifted back into it.
+- **SPT version filter** (header picker, unreleased). State keys:
+  `spt_version_filter` (a release, or `"auto"` to follow the Local Mods
+  install; absent means all versions), `spt_versions` (the picker's cached
+  release list, refreshed daily), `last_check_spt_version`. Mod records taken
+  under a filter carry `spt_version`. `_bg_check` stays quiet on the check
+  after the filter changes, and never compares a version against one recorded
+  under a different filter -- the same mod is legitimately 1.3.0 for one SPT
+  and 0.9.3 for another, and comparing them was a toast and a downgrade arrow
+  for every such mod.
 
 ### Open items
 

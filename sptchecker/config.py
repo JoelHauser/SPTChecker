@@ -31,6 +31,10 @@ FORGE_MOD_PAGE = "https://sp-mod.com/mod/2921/sptchecker"
 # riding the 15-minute mod poll would spend hundreds of requests a day to learn
 # nothing -- against a host that meters us and asked us to ease off.
 UPDATE_CHECK_INTERVAL_HOURS = 6
+# The SPT version picker's list of releases. SPT itself releases even less
+# often than this app, so a daily refresh is already generous -- and like the
+# update check it rides its own timer, never the mod poll.
+SPT_VERSIONS_REFRESH_HOURS = 24
 
 # ── Feed ───────────────────────────────────────────────────────────────
 
@@ -39,6 +43,7 @@ FEED_UPDATED_URL = "https://sp-mod.com/mods/rss?sort=updated"
 API_URL = "https://sp-mod.com/api/v0/mods"
 API_MOD_URL = "https://sp-mod.com/api/v0/mod"
 API_MODS_UPDATES_URL = "https://sp-mod.com/api/v0/mods/updates"
+API_SPT_VERSIONS_URL = "https://sp-mod.com/api/v0/spt/versions"
 FORGE_URL = "https://sp-mod.com/mods"
 FORGE_USER_URL = "https://sp-mod.com/user"
 DC_NS = "http://purl.org/dc/elements/1.1/"
