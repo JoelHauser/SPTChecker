@@ -194,26 +194,37 @@ Then `python -m PyInstaller --noconfirm SPTModChecker_v<VER>.spec`.
 
 **Update this section as work completes.**
 
-- Version **3.4.4**, working branch **`checkertest`** (not `main`).
+- Version **3.4.5**, working branch **`checkertest`** (not `main`).
 - 3.4.0 was a full visual overhaul: `theme.py` is new, and cards, header,
   stats, popups and window sizing were all rebuilt. 3.4.1 fixed two bugs it
   introduced (popup close button activating the control underneath; change
   notes clipping their last lines). 3.4.2 stopped a newly published mod
   filling a slot in both columns and firing two toasts.
-- **3.4.4 is built and smoke-tested**: `dist/SPTModChecker_v3.4.4.exe` plus a
+- **3.4.5 is built and smoke-tested**: `dist/SPTModChecker_v3.4.5.exe` plus a
   matching `.zip` (the exe alone at the zip root, same shape as previous
-  releases), tagged `V3.4.4`. The binary still has to be attached to a GitHub
-  release and uploaded to the Forge by hand -- `gh` is not installed here.
-  It carries the R2-traffic response described in Open Items: the 30-day
+  releases), tagged `V3.4.5`. Smoke test ran against a fresh data dir: alive
+  after 15s, `last_check` written, filter resolved to the newest release. The
+  binary still has to be attached to a GitHub release and uploaded to the
+  Forge by hand -- `gh` isn't signed in on either machine.
+- **Smoke-testing the exe rewrites the real registry**: `refresh_startup_if_stale`
+  points the HKCU Run entry at `dist/`, and `register_show_protocol` does the
+  same for `sptchecker://`. Back both up first and restore them after, or the
+  installed copy stops launching at startup once `dist/` is cleaned.
+- 3.4.4 carried the R2-traffic response described in Open Items: the 30-day
   thumbnail cache and category-tinted placeholders.
 - No 3.4.1 exe was ever built -- `dist/` went straight from 3.3.3 to 3.4.2,
   so 3.4.1's two fixes first reached users in 3.4.2.
 - 3.4.3 made a toast click raise the window (see **Toast activation**).
+- **3.4.5 is scrmjt's PR #27** (SPT version filter, check schedule,
+  cap-centred labels), the first outside contribution. It was merged with
+  their commits intact rather than squashed, so they keep authorship on
+  GitHub, and credited in the README's Credits section. Do the same for
+  future contributors.
 - Update notifications fire on a mod's **version actually changing**, not on
   it entering the updated column. The old rule missed a genuine update to a
   mod already sitting in the column, and announced unchanged mods that
   drifted back into it.
-- **SPT version filter** (header picker, unreleased). State keys:
+- **SPT version filter** (header picker, since 3.4.5). State keys:
   `spt_version_filter` -- `"latest"`, `"4.0.x"` (newest of that line), a
   release, `"auto"` (the Local Mods install) or `"all"`; absent means
   `config.DEFAULT_SPT_VERSION_FILTER`, which is `"latest"`. `spt_versions`
@@ -226,7 +237,7 @@ Then `python -m PyInstaller --noconfirm SPTModChecker_v<VER>.spec`.
   compares a version against one recorded under a different filter -- the
   same mod is legitimately 1.3.0 for one SPT and 0.9.3 for another, and
   comparing them was a toast and a downgrade arrow for every such mod.
-- **Check schedule** (status bar countdown, unreleased). State key
+- **Check schedule** (status bar countdown, since 3.4.5). State key
   `check_interval_minutes`: one of `config.CHECK_INTERVAL_CHOICES`, or 0 for
   off; anything else falls back to 15. A launch no longer always checks:
   `_start_schedule` checks only if `last_check` is older than the interval,
@@ -246,6 +257,9 @@ Then `python -m PyInstaller --noconfirm SPTModChecker_v<VER>.spec`.
   is a deliberate accessor.
 - **`theme._BUTTON_KINDS["ghost"]`** is never selected; removing it would
   collapse the whole `kind` parameter.
+- **Check Now has lost its hover highlight**: `_bind_tooltip` replaces
+  `PillButton`'s own `<Enter>` binding instead of adding to it (flagged by
+  scrmjt in PR #27, predates it).
 - **~230 MB of stale `build/` folders** for versions 2.1.1 – 3.0.0. Gitignored
   and regenerable, but they sync to OneDrive for no reason.
 - **The Forge's R2 image storage is under cost pressure from external
