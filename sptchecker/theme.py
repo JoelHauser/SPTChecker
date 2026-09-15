@@ -24,6 +24,10 @@ from .config import (
 SS = 4  # supersample factor for every rendered primitive
 
 FONT_FAMILY = "Segoe UI"
+# FONT_FAMILY's capital height per em: sCapHeight 1434 over 2048 units per em,
+# read from segoeui.ttf's OS/2 table. Change it with the family -- PillButton
+# centres its label on it.
+CAP_HEIGHT_EM = 1434 / 2048
 
 _fonts = {}
 _images = {}
@@ -301,8 +305,28 @@ class PillButton(tk.Canvas):
     def _resize(self):
         self._box_w = self._font.measure(self._text) + self._padx * 2
         self._box_h = self._font.metrics("linespace") + self._pady * 2
+        self._text_top = self._cap_centred_top()
         super().configure(width=self._box_w, height=self._box_h)
         self._redraw()
+
+    def _cap_centred_top(self):
+        """Where the label's line box starts so its capitals, rather than the
+        line box, sit at the pill's vertical centre.
+
+        Tk centres text by its line box, which keeps room below the baseline
+        for descenders these labels hardly use -- so on every button the text
+        sat low, by 0.5px to 3px depending on display scaling and on whether
+        Tk had an odd pixel to round (2px at 150%). Placing the baseline from
+        the cap height, and rounding once here rather than in Tk's centring,
+        measured within half a pixel on every button style at 100% to 300%.
+        """
+        size = self._font.actual("size")
+        em_px = -size if size < 0 else size * float(self.tk.call("tk", "scaling"))
+        baseline = self._box_h / 2 + em_px * CAP_HEIGHT_EM / 2
+        # The quarter pixel is measured, not derived: it splits the rounding
+        # across scalings, where the exact centre left the 8pt button 1px
+        # high at 225%.
+        return round(baseline - self._font.metrics("ascent") + 0.25)
 
     def _redraw(self):
         self.delete("all")
@@ -310,7 +334,7 @@ class PillButton(tk.Canvas):
         if fill or outline:
             self._photo = pill(self._box_w, self._box_h, fill or self._bg, outline)
             self.create_image(0, 0, anchor="nw", image=self._photo)
-        self.create_text(self._box_w / 2, self._box_h / 2, text=self._text,
+        self.create_text(self._box_w / 2, self._text_top, anchor="n", text=self._text,
                          font=self._font, fill=fg)
 
     def _on_enter(self, _e):

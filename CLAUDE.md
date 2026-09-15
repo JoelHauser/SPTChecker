@@ -55,6 +55,12 @@ Each of these cost real debugging time. They are not hypothetical.
 - **`tk.Canvas` requests a default 378px width.** In a narrower container it
   consumes the whole cavity, and anything packed after it (a scrollbar) is
   allocated nothing. Pass `width=1` and pack the scrollbar with `before=`.
+- **Tk centres canvas text by its line box, not its capitals.** The line box
+  keeps room for descenders, so centred labels sat 0.5px to 3px low depending
+  on display scaling and on which way Tk rounded. `PillButton` places its
+  baseline from `theme.CAP_HEIGHT_EM` instead (measured within half a pixel on
+  every button style, 100% to 300%). `ToggleSwitch`'s label still centres the
+  old way -- about 3px low beside its track at 150%.
 - **Buttons must require a press before acting on a release.** Destroying a
   window on mouse-down drops the pointer grab and the OS delivers the release
   to whatever was underneath. See `theme.PillButton._on_press`.
