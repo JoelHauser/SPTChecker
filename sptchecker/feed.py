@@ -379,18 +379,20 @@ def fetch_spt_versions():
 
     Pre-release labels are left out: spt_version_satisfies only reads plain
     X.Y.Z releases, so offering one would be offering a filter that matches
-    nothing. There are none on the Forge today. One page is enough -- sorted
-    newest first, the only releases a full page could ever push off the end
-    are the oldest ones.
+    nothing. A release no mod supports yet is left out too, since "latest"
+    would otherwise land on it and empty both columns. Neither exists on the
+    Forge today. One page is enough -- sorted newest first, the only releases a
+    full page could ever push off the end are the oldest ones.
     """
     try:
         resp = _forge_request("get", API_SPT_VERSIONS_URL,
-                              params={"fields": "version,version_labels",
+                              params={"fields": "version,version_labels,mod_count",
                                       "sort": "-version", "per_page": 50},
                               headers=_API_HEADERS, timeout=15)
         resp.raise_for_status()
         return [v["version"] for v in resp.json().get("data", [])
-                if v.get("version") and not v.get("version_labels")]
+                if v.get("version") and not v.get("version_labels")
+                and v.get("mod_count") != 0]
     except Exception:
         return None
 

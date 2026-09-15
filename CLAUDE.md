@@ -203,10 +203,14 @@ Then `python -m PyInstaller --noconfirm SPTModChecker_v<VER>.spec`.
   mod already sitting in the column, and announced unchanged mods that
   drifted back into it.
 - **SPT version filter** (header picker, unreleased). State keys:
-  `spt_version_filter` (a release, or `"auto"` to follow the Local Mods
-  install; absent means all versions), `spt_versions` (the picker's cached
-  release list, refreshed daily), `last_check_spt_version`. Mod records taken
-  under a filter carry `spt_version`. `_bg_check` stays quiet on the check
+  `spt_version_filter` -- `"latest"`, `"4.0.x"` (newest of that line), a
+  release, `"auto"` (the Local Mods install) or `"all"`; absent means
+  `config.DEFAULT_SPT_VERSION_FILTER`, which is `"latest"`. `spt_versions`
+  is the release list those resolve against, refreshed by the first check
+  each day on the check thread -- not a timer, because the default can't
+  resolve without it. `last_check_spt_version` is the resolved release the
+  last check used, so a new release moving "latest" re-baselines like any
+  other filter change. Mod records taken under a filter carry `spt_version`. `_bg_check` stays quiet on the check
   after the filter changes, and never compares a version against one recorded
   under a different filter -- the same mod is legitimately 1.3.0 for one SPT
   and 0.9.3 for another, and comparing them was a toast and a downgrade arrow

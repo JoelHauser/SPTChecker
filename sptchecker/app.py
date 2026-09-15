@@ -11,7 +11,7 @@ from PIL import Image, ImageTk
 from .config import (
     ACCENT_DANGER, ACCENT_NEW, ACCENT_UPD, APP_VERSION, BG, BORDER, CARD_BG,
     CATEGORY_COLOR_DEFAULT, CATEGORY_COLORS,
-    CHECK_INTERVAL_MINUTES,
+    CHECK_INTERVAL_MINUTES, DEFAULT_SPT_VERSION_FILTER,
     DISPLAY_FIELDS, FORGE_MOD_PAGE, FORGE_URL, LAYOUT_VERSION, MAX_PER_CATEGORY,
     SEPARATOR, SPT_VERSIONS_REFRESH_HOURS, STATE_FIELDS, STATUS_BG, TEXT,
     TEXT_BRIGHT, TEXT_DIM, TEXT_FAINT, UPDATE_CHECK_INTERVAL_HOURS,
@@ -69,6 +69,9 @@ class SPTCheckerApp:
         self._photos = {}  # frame -> PhotoImage refs for its current cards
         self._checking = False
         self._recheck_pending = False
+        # When the SPT release list was last fetched (time.monotonic); never, at
+        # launch, so the first check refreshes it -- see _refresh_spt_versions.
+        self._spt_versions_at = float("-inf")
         self._scanning = False
         self._local_scan_window = None
         self._next_check_ts = None
@@ -413,31 +416,52 @@ class SPTCheckerApp:
 
     # ── SPT version filter ─────────────────────────────────────────────
 
-    # state["spt_version_filter"] holds the choice: absent for every version,
-    # "auto" to follow the Local Mods install, or a release like "4.0.13".
+    # state["spt_version_filter"] holds the choice, and absent means
+    # DEFAULT_SPT_VERSION_FILTER: "latest" (the newest SPT release), "4.0.x"
+    # (the newest release in that line), "4.0.13" (exactly that release),
+    # "auto" (whatever the Local Mods install runs), or "all". Choices that
+    # float are resolved again on every check, so a new SPT release moves the
+    # filter along without the picker being touched.
+
+    def _spt_choice(self):
+        return self.state.get("spt_version_filter", DEFAULT_SPT_VERSION_FILTER)
 
     def _feed_spt_version(self):
         """The SPT release the feed is filtered to right now, or "" for none.
 
-        "auto" reads the installed server's version on every call rather than
-        remembering it, so upgrading SPT carries the filter along. With no
-        install to read, the feed goes unfiltered rather than empty -- the
-        picker says so, and a blank column would only look broken.
+        A choice that can't be resolved -- "auto" with no install to read, or
+        "latest" before the release list has ever loaded -- leaves the feed
+        unfiltered rather than empty: the picker says which, and a blank
+        column would only look broken.
         """
-        choice = self.state.get("spt_version_filter", "")
-        if choice != "auto":
-            return choice
-        path = self.state.get("spt_install_path", "")
-        return (detect_spt_version(path) if path else None) or ""
+        choice = self._spt_choice()
+        if choice == "all":
+            return ""
+        if choice == "auto":
+            path = self.state.get("spt_install_path", "")
+            return (detect_spt_version(path) if path else None) or ""
+        releases = self.state.get("spt_versions", [])
+        if choice == "latest":
+            return releases[0] if releases else ""
+        if choice.endswith(".x"):
+            return next((r for r in releases if r.rsplit(".", 1)[0] == choice[:-2]), "")
+        return choice
 
     def _spt_picker_text(self):
         # Kept short: the header's minimum width is measured from its controls,
-        # and "All SPT versions" cost every user 128px of it at 100% scaling --
-        # past the 720px default -- to label the state most of them never
-        # leave. The menu spells each option out in full.
-        choice = self.state.get("spt_version_filter", "")
-        version = self._feed_spt_version() or "All"
-        return f"SPT: {version}{' (auto)' if choice == 'auto' else ''}  ▾"
+        # and a label much longer than "SPT: 4.0.13" pushes it past the 720px
+        # default at 100% scaling for every user. So the label names the
+        # release being filtered for, and the menu says how it was chosen.
+        choice = self._spt_choice()
+        version = self._feed_spt_version()
+        if choice == "auto":
+            text = f"{version or 'All'} (auto)"
+        elif choice == "all":
+            text = "All"
+        else:
+            # A floating choice that hasn't resolved yet names itself instead.
+            text = version or choice
+        return f"SPT: {text}  ▾"
 
     def _update_spt_picker(self):
         self._spt_btn.configure(text=self._spt_picker_text())
@@ -455,16 +479,16 @@ class SPTCheckerApp:
         return list(lines.items())
 
     def _show_spt_menu(self):
-        """The picker's menu: every version, auto-detect, then one entry per
-        minor line that opens that line's releases.
+        """The picker's menu: the latest release, auto-detect and every version,
+        then one entry per minor line that opens that line's releases.
 
         Two levels because a flat list is 50 releases long -- taller than the
-        screen -- and the patch can't be dropped to shorten it: constraints are
-        decided per patch ("~4.0.12" covers 4.0.12 and 4.0.13 but not 4.0.11),
-        so offering only each line's newest release would filter for a release
-        the user isn't running.
+        screen -- and a line's exact releases can't be dropped in favour of its
+        latest: constraints are decided per patch ("~4.0.12" covers 4.0.12 and
+        4.0.13 but not 4.0.11), so someone held on an older patch needs it.
         """
-        choice = self.state.get("spt_version_filter", "")
+        choice = self._spt_choice()
+        releases = self.state.get("spt_versions", [])
         path = self.state.get("spt_install_path", "")
         detected = detect_spt_version(path) if path else None
         if detected:
@@ -473,23 +497,38 @@ class SPTCheckerApp:
             auto = "Match my install (SPT not found)"
         else:
             auto = "Match my install (set its folder in Local Mods)"
+        latest = f"Latest release ({releases[0]})" if releases else "Latest release"
         items = [
-            (self._menu_label("All SPT versions", not choice), lambda: self._set_spt_filter("")),
+            (self._menu_label(latest, choice == "latest"), lambda: self._set_spt_filter("latest")),
             (self._menu_label(auto, choice == "auto"), lambda: self._set_spt_filter("auto")),
+            (self._menu_label("All SPT versions", choice == "all"),
+             lambda: self._set_spt_filter("all")),
         ]
         lines = self._spt_release_lines()
         if lines:
             items.append(("-", None))
-            for line, releases in lines:
-                items.append((self._menu_label(f"SPT {line}  ›", choice in releases),
+            for line, line_releases in lines:
+                selected = choice == f"{line}.x" or choice in line_releases
+                items.append((self._menu_label(f"SPT {line}  ›", selected),
                               lambda line=line: self._show_spt_line_menu(line)))
         self._show_spt_popup(items)
 
     def _show_spt_line_menu(self, line):
-        choice = self.state.get("spt_version_filter", "")
+        """One line's releases, led by the choice that follows its newest.
+
+        Written "Latest 4.0.x": x is how SPT release lines are commonly written,
+        and "Latest" is what separates this from matching any 4.0 patch -- it
+        filters for the newest one alone, moving when a new patch lands.
+        """
+        choice = self._spt_choice()
         releases = dict(self._spt_release_lines()).get(line, [])
-        self._show_spt_popup([(self._menu_label(r, r == choice),
-                               lambda r=r: self._set_spt_filter(r)) for r in releases])
+        if not releases:
+            return
+        items = [(self._menu_label(f"Latest {line}.x ({releases[0]})", choice == f"{line}.x"),
+                  lambda: self._set_spt_filter(f"{line}.x")), ("-", None)]
+        items += [(self._menu_label(r, r == choice), lambda r=r: self._set_spt_filter(r))
+                  for r in releases]
+        self._show_spt_popup(items)
 
     @staticmethod
     def _menu_label(text, selected):
@@ -507,40 +546,39 @@ class SPTCheckerApp:
                   btn.winfo_rooty() + btn.winfo_height() + 4)
 
     def _set_spt_filter(self, choice):
-        if choice == self.state.get("spt_version_filter", ""):
+        if choice == self._spt_choice():
             return
-        if choice:
-            self.state["spt_version_filter"] = choice
-        else:
-            self.state.pop("spt_version_filter", None)
+        before = self._feed_spt_version()
+        self.state["spt_version_filter"] = choice
         save_state(self.state)
         self._update_spt_picker()
-        self._recheck()
+        # Two choices can name the same release -- "latest" and "4.1.x" are
+        # both 4.1.5 today -- and moving between them changes nothing a check
+        # would fetch.
+        if self._feed_spt_version() != before:
+            self._recheck()
 
-    def _schedule_spt_versions_refresh(self, delay_ms=5000):
-        """Refresh the picker's list of SPT releases, then re-arm.
+    def _refresh_spt_versions(self):
+        """Refresh the cached SPT release list, at most once a day. Runs on the
+        check thread, before the check resolves its filter.
 
-        Fetched ahead of time so opening the picker never waits on the network,
-        but on its own long timer like the update check -- SPT releases are
-        rare, and riding the 15-minute mod poll would ask the same question
-        dozens of times a day. Delayed past startup so it never competes with
-        the first check.
+        Part of the check rather than on a timer of its own because "latest",
+        the default, can't be resolved without the list: a timer that fired
+        after startup would leave a first launch's first check unfiltered until
+        the next one. Still no more than daily -- SPT releases are rare, and
+        asking on every check would be dozens of requests a day to learn
+        nothing.
         """
-        self.root.after(delay_ms, lambda: threading.Thread(
-            target=self._bg_spt_versions_refresh, daemon=True).start())
-
-    def _bg_spt_versions_refresh(self):
-        # None on failure: the list already saved stays as it was.
+        fresh = (time.monotonic() - self._spt_versions_at
+                 < SPT_VERSIONS_REFRESH_HOURS * 3600)
+        if fresh and self.state.get("spt_versions"):
+            return
+        # None on failure: the list already saved stays, and the next check
+        # tries again.
         releases = fetch_spt_versions()
         if releases:
-            self.root.after(0, self._apply_spt_versions, releases)
-        self.root.after(0, self._schedule_spt_versions_refresh,
-                        SPT_VERSIONS_REFRESH_HOURS * 3600 * 1000)
-
-    def _apply_spt_versions(self, releases):
-        if releases != self.state.get("spt_versions"):
             self.state["spt_versions"] = releases
-            save_state(self.state)
+            self._spt_versions_at = time.monotonic()
 
     # ── Local mod scan (opt-in) ───────────────────────────────────────
 
@@ -587,7 +625,7 @@ class SPTCheckerApp:
     def _set_local_scan_path(self, path):
         self.state["spt_install_path"] = path
         save_state(self.state)
-        if self.state.get("spt_version_filter") == "auto":
+        if self._spt_choice() == "auto":
             # The feed takes its SPT version from this folder, so a different
             # folder can mean a different release to filter for.
             self._update_spt_picker()
@@ -796,6 +834,7 @@ class SPTCheckerApp:
 
     def _bg_check(self):
         try:
+            self._refresh_spt_versions()
             spt_version = self._feed_spt_version()
             newest, updated = fetch_feeds(spt_version)
             known = self.state.get("mods", {})
@@ -984,10 +1023,10 @@ class SPTCheckerApp:
                 self._tray.icon = self._tray_icon_normal
                 self._tray.title = "SPTChecker — no changes"
 
-        if self.state.get("spt_version_filter") == "auto":
-            # The detected release can change between checks without the
-            # picker being touched -- SPT upgraded in place.
-            self._update_spt_picker()
+        # Resolved afresh by every check: a new SPT release under "latest", or
+        # SPT upgraded in place under "auto", changes the label with the
+        # picker untouched.
+        self._update_spt_picker()
 
         self._schedule_next()
         self._run_pending_recheck()
@@ -1114,5 +1153,4 @@ class SPTCheckerApp:
 
     def run(self):
         self._schedule_update_check()
-        self._schedule_spt_versions_refresh()
         self.root.mainloop()

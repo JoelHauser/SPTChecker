@@ -32,8 +32,8 @@ FORGE_MOD_PAGE = "https://sp-mod.com/mod/2921/sptchecker"
 # nothing -- against a host that meters us and asked us to ease off.
 UPDATE_CHECK_INTERVAL_HOURS = 6
 # The SPT version picker's list of releases. SPT itself releases even less
-# often than this app, so a daily refresh is already generous -- and like the
-# update check it rides its own timer, never the mod poll.
+# often than this app, so a daily refresh is already generous -- fetched by
+# the first check after that long, never by every check.
 SPT_VERSIONS_REFRESH_HOURS = 24
 
 # ── Feed ───────────────────────────────────────────────────────────────
@@ -71,6 +71,10 @@ MIGRATED_URL_FIELDS = ("link", "thumb_url")
 # Polling every 5 minutes made two of every three checks pure waste, against a
 # host that had already turned on bot countermeasures once.
 CHECK_INTERVAL_MINUTES = 15
+# The SPT release the feed is filtered for until someone picks one: the
+# newest release, followed as new ones come out. "all" is the unfiltered feed;
+# app._feed_spt_version lists the other choices.
+DEFAULT_SPT_VERSION_FILTER = "latest"
 MAX_PER_CATEGORY = 7
 THUMB_SIZE = (52, 52)
 STATE_FIELDS = (
