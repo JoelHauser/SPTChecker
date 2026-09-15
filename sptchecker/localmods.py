@@ -6,8 +6,8 @@ from pathlib import Path
 
 from .config import (
     BEPINEX_PLUGINS_SUBPATH, CORE_SPT_NAME_PREFIX, LEGACY_SERVER_MODS_SUBPATH,
-    MODREADER_EXE, MODREADER_TIMEOUT_SECONDS, SERVER_MODS_SUBPATH,
-    SPT_SERVER_EXE_SUBPATH,
+    MODREADER_EXE, MODREADER_TIMEOUT_SECONDS, SERVER_MODS_SUBPATHS,
+    SPT_SERVER_EXE_SUBPATHS,
 )
 
 _CREATE_NO_WINDOW = 0x08000000  # avoid a console flash launching a console-mode exe from the GUI app
@@ -25,6 +25,22 @@ class _VS_FIXEDFILEINFO(ctypes.Structure):
     ]
 
 
+def _find_server_exe(spt_root):
+    """Locate SPT.Server.exe across the layouts 4.0 and 4.1 use, or None.
+
+    Only paths inside a known server folder count. A copy sitting loose in the
+    game root is deliberately ignored: SPT 4.1's own mod manager was misled by
+    exactly that, spare executables people leave lying around after upgrading,
+    and picked the wrong folder as a result.
+    """
+    root = Path(spt_root)
+    for subpath in SPT_SERVER_EXE_SUBPATHS:
+        exe = root / subpath
+        if exe.is_file():
+            return str(exe)
+    return None
+
+
 def detect_spt_version(spt_root):
     """Read the installed SPT server's version straight from SPT.Server.exe's
     own Windows version resource -- there's no plain-text config file that
@@ -33,7 +49,9 @@ def detect_spt_version(spt_root):
     requires the target SPT version to correctly judge compatibility.
     Returns None (never raises) if the exe is missing or unreadable -- e.g. a
     client-only install with no server component."""
-    exe_path = str(Path(spt_root) / SPT_SERVER_EXE_SUBPATH)
+    exe_path = _find_server_exe(spt_root)
+    if not exe_path:
+        return None
     try:
         version_dll = ctypes.WinDLL("version.dll")
         size = version_dll.GetFileVersionInfoSizeW(exe_path, None)
@@ -99,11 +117,24 @@ def find_bepinex_plugins(spt_root):
 
 def find_server_mods(spt_root):
     """SPT v4 server mods -- each mod's own DLL lives directly in its folder,
-    named after the folder (e.g. user/mods/foo/foo.dll)."""
-    mods_dir = Path(spt_root) / SERVER_MODS_SUBPATH
-    if not mods_dir.is_dir():
-        return []
-    return sorted(mods_dir.glob("*/*.dll"))
+    named after the folder (e.g. user/mods/foo/foo.dll).
+
+    Checks every known server folder name rather than one: 4.1 renamed "SPT"
+    to "SPT_Runtime", so hardcoding either misses half the installs out there.
+    A 4.1 user with no client plugins previously came back with nothing at all,
+    since the only folder being looked at didn't exist on their machine.
+
+    Both are scanned when both exist -- an in-place upgrade can leave the old
+    folder behind, and a mod found twice is deduplicated later by its Forge
+    match, whereas a mod missed here is invisible for the rest of the scan.
+    """
+    root = Path(spt_root)
+    found = []
+    for subpath in SERVER_MODS_SUBPATHS:
+        mods_dir = root / subpath
+        if mods_dir.is_dir():
+            found.extend(mods_dir.glob("*/*.dll"))
+    return sorted(found)
 
 
 def find_legacy_server_mods(spt_root):
@@ -148,9 +179,19 @@ def _is_core_spt_component(record):
 
 def validate_spt_root(path):
     """Quick sanity check for the folder picker: does this look like an SPT
-    install? Checks both the client plugin dir and the v4 server mods dir."""
+    install?
+
+    Accepts the client plugin dir, any known server mods dir, or the server
+    executable itself. Previously this knew only 4.0's "SPT" folder, so a 4.1
+    install that runs server mods without BepInEx failed the check outright --
+    the folder was rejected before a scan could even start.
+    """
     root = Path(path)
-    return (root / BEPINEX_PLUGINS_SUBPATH).is_dir() or (root / SERVER_MODS_SUBPATH).is_dir()
+    if (root / BEPINEX_PLUGINS_SUBPATH).is_dir():
+        return True
+    if any((root / sub).is_dir() for sub in SERVER_MODS_SUBPATHS):
+        return True
+    return _find_server_exe(path) is not None
 
 
 def scan_installed_mods(spt_root):

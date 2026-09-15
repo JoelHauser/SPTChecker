@@ -2,7 +2,7 @@
 
 A lightweight Windows desktop app that watches the [SPT Forge](https://sp-mod.com/mods) for new and updated mods — and, optionally, checks your own installed mods against it.
 
-> **The Forge moved to sp-mod.com.** The Forge changed hands and now lives at **sp-mod.com**; the old `forge.sp-tarkov.com` is fully offline. **Update to 3.3.1** — anything before 3.3.0 points at the dead domain and cannot reach anything at all. Your saved history carries over automatically on first launch: mod ids were preserved across the move, so already-seen mods aren't re-reported and your tracked count stays intact.
+> **The Forge moved to sp-mod.com.** The Forge changed hands and now lives at **sp-mod.com**; the old `forge.sp-tarkov.com` is fully offline. **Update to 3.4.5** — anything before 3.3.0 points at the dead domain and cannot reach anything at all. Your saved history carries over automatically on first launch: mod ids were preserved across the move, so already-seen mods aren't re-reported and your tracked count stays intact.
 
 > **Note on antivirus flags:** A small number of vendors may flag this exe as malicious. Most of them (ALYac, Arcabit, Emsisoft, eScan, GData, VIPRE) all run BitDefender's engine under the hood and are triggering off the same single false positive detection. These are not real threats. Source code is open on GitHub.
 
@@ -10,7 +10,7 @@ A lightweight Windows desktop app that watches the [SPT Forge](https://sp-mod.co
 
 ### What it does
 
-SPTChecker runs quietly in your system tray and checks the Forge every 15 minutes for changes. When it finds something, it sends a Windows toast notification and updates the UI — no need to manually browse the Forge to stay up to date.
+SPTChecker runs quietly in your system tray and checks the Forge for changes every 15 minutes, or on whatever schedule you pick. When it finds something, it sends a Windows toast notification and updates the UI — no need to manually browse the Forge to stay up to date.
 
 It can also do the reverse: point it at your SPT install folder and it'll scan your actually-installed mods and tell you which ones have updates waiting (see **Local mod scanning** below) — entirely opt-in, off by default.
 
@@ -20,7 +20,7 @@ It can also do the reverse: point it at your SPT install folder and it'll scan y
 
 1. On first launch, the app populates both columns — **New Mods** and **Recently Updated**, mirroring the website's own tabs.
 2. Both columns are built from the Forge's RSS feeds and public API — **no HTML scraping**.
-3. Every 15 minutes it re-fetches and compares against stored state — matching the shortest cache window sp-mod.com serves, since checking more often can't surface anything newer.
+3. Every 15 minutes it re-fetches and compares against stored state — matching the shortest cache window sp-mod.com serves, since checking more often can't surface anything newer. Click the countdown in the status bar to check every hour, 4, 12 or 24 hours, or once a week instead, or only when you click **Check Now**. Restarting the app doesn't reset the schedule, so a daily check stays daily even if you reboot more often.
 4. Newly seen mods are flagged **New**. The Recently Updated column tracks fresh releases of existing mods.
 5. If a mod author unpublishes their mod, it's automatically removed from the display.
 6. Results persist across checks and restarts — new findings push older entries down in a rolling history (up to 7 per column).
@@ -33,18 +33,19 @@ A full check completes in roughly two seconds. Requests are paced and automatica
 ### UI
 
 - **Two-panel layout** — New mods on the left, recently updated mods on the right (up to 7 per column)
-- **Mod cards** — Each card shows the thumbnail, title, author, version, category, and description
+- **Mod cards** — Each card shows the thumbnail, title, author, version, category, and description, on a rounded surface outlined in its category color
 - **Version diff** — Updated mods show the version change inline (e.g. `1.2.3 → 1.3.0`)
-- **View Change Notes** — A small icon on updated mod cards opens a popup with that version's changelog, rendered as actual markdown (bold, italic, inline code, headers, bullet lists, and clickable links that open in your browser) rather than a plain text dump, plus a direct "Open on Forge" button
+- **SPT version filter** — The **SPT** menu in the header limits both columns to mods that run on one SPT release: the latest release, the latest of a line (**Latest 4.0.x** follows new 4.0 patches as they come out), an exact release, the version of the install you've pointed **Local Mods** at, or all versions. Each mod appears at the newest version that supports your SPT, so a mod that has moved on to a newer SPT still shows the release built for yours. Compatibility comes from the Forge's own filter, not a guess. Switching versions quietly rebuilds the columns rather than announcing every mod in them, and only the filtered mods are tracked, so the Stats window follows the filter too. Defaults to the latest SPT release
+- **View Change Notes** — A small icon on updated mod cards opens a popup with that version's changelog, anchored to the card so you can see which mod it belongs to; click the same icon again (or press Escape) to close it. Rendered as actual markdown (bold, italic, inline code, headers, bullet lists, and clickable links that open in your browser) rather than a plain text dump, plus a direct "Open on Forge" button
 - **NEW badge** — Freshly detected mods are marked with a green NEW badge so you can spot changes at a glance
 - **NEW AUTHOR badge** — Mods from accounts created in the last 60 days are flagged so you can spot new community members
 - **Timestamps** — Each card shows how long ago the mod was published or updated (e.g. "2h ago", "yesterday")
-- **Hover-scrolling** — Hover over any card to smoothly scroll truncated text and read the full details
+- **Hover-scrolling** — Long titles and descriptions are trimmed with an ellipsis; hover a card to smoothly scroll them and read the full text
 - **Click to open** — Click any card to open the mod page directly on the Forge
 - **Right-click menu** — Right-click any card for quick options to view change notes, open on Forge, or copy the link
 - **Category legend** — Hover the info icon in the header for a color key to every mod category
-- **Stats window** — Click **Stats** for total mods tracked, mods added this week, a 30-day daily-activity chart (hover any point for the exact date/count), and the top 5 authors/categories by activity in the last 30 days (rolls forward automatically, no manual reset). Author names are clickable and open their Forge profile
-- **Window size memory** — The app remembers and restores its window size between sessions
+- **Stats window** — Click **Stats** for total mods tracked, mods added this week, a 30-day chart of new mods published per day (hover any point for the exact date/count), and the top 5 authors/categories by activity in the last 30 days (rolls forward automatically, no manual reset). Author names are clickable and open their Forge profile
+- **Right-sized on first launch** — The window opens sized to show every card without scrolling, measured against your display scaling rather than assumed. After that it remembers and restores whatever size you chose; shrink it and both columns scroll
 - **Dark theme** — Styled to match the SPT aesthetic
 
 ---
@@ -53,12 +54,13 @@ A full check completes in roughly two seconds. Requests are paced and automatica
 
 Click **Local Mods** to check your own installed mods against the Forge — entirely optional and off by default. If you run into anything odd, please report it.
 
-1. Point it at your SPT install folder (validated automatically — it checks for `BepInEx/plugins` or `SPT/user/mods`).
+1. Point it at your SPT install folder (validated automatically — it checks for `BepInEx/plugins`, or the server mods folder under either `SPT_Runtime/` (SPT 4.1+) or `SPT/` (SPT 4.0)).
 2. Click **Scan Now**. Rather than guessing a mod's identity from its filename or code shape, the app reads each mod's *real* declared metadata via actual .NET reflection, so it works no matter how a mod author structured their code. A progress bar tracks each mod as it's checked.
 3. Each mod is matched against the Forge — exact ID lookup first, falling back to a smarter name search that handles camelCase/dotted internal names, author-prefixed names, and a full-text search, then conservative fuzzy ranking. Results are grouped into color-coded sections:
    - **Updates Available** (orange) — full mod cards (thumbnail, version diff, changelog, right-click menu — same as the main feed), with an **Open All** button to launch every one of those mod pages at once
    - **Up to Date** (green) — a simple clickable list linking to each mod's Forge page
    - **Not Found on Forge** (red) — mods that couldn't be confidently matched (see below for why)
+   - **Couldn't Check** (orange) — only appears if the Forge rate-limited the scan partway through. These mods are almost certainly fine; the app just didn't manage to ask about them, and says so rather than reporting them as missing
 4. Every match is then confirmed against the Forge's own update service, using **your actual installed SPT version** (read directly from `SPT.Server.exe`). This catches things a plain version comparison can't:
    - A newer release that isn't compatible with your SPT build is **not** offered as an update
    - A newer release blocked by another mod's dependency requirements is **not** offered as an update
@@ -79,21 +81,25 @@ Click **Local Mods** to check your own installed mods against the Forge — enti
 - Right-click for **Show**, **Check Now**, or **Quit**
 - **Tray badge** — A red dot appears on the tray icon when there are unread changes while the app is minimized, with an unread count in the tooltip. Clears automatically when you open the window
 - Toast notifications work even while minimized
+- **Click a toast to open SPTChecker** — clicking the notification body brings the
+  window up from the tray, or starts the app if it isn't running. The **View on
+  Forge** button on the toast still goes straight to the mod page instead
 
 ---
 
 ### Status bar
 
 - **Forge status indicator** — A dot shows whether the last check reached the Forge OK (green) or failed (red); hover for details
-- **Live countdown** — Shows time remaining until the next automatic check
+- **Update available** — A green dot appears when a newer SPTChecker has been posted to the Forge; click it to open the mod page. Invisible when you're up to date, and it only ever tells you — nothing installs itself
+- **Live countdown** — Shows time remaining until the next automatic check; click it to change how often checks run, or to turn automatic checks off
 - **Running summary** — Shows the baseline mod count on first run, or how many new/updated mods were found (and total tracked) on each subsequent check
 
 ---
 
 ### Additional features
 
-- **Run on Startup** — One-click checkbox to launch silently in the background when Windows starts
-- **Thumbnail caching** — Mod thumbnails are cached to disk and auto-purged after 3 days; mods with no uploaded thumbnail get the same wireframe placeholder icon shown on the Forge itself, instead of a blank box
+- **Run on Startup** — One-click toggle to launch silently in the background when Windows starts
+- **Thumbnail caching** — Mod thumbnails are cached to disk for 30 days; mods with no uploaded thumbnail, or whose thumbnail can't be fetched, get a category-colored placeholder icon instead of a blank box. Forge thumbnail loading may be unreliable at times — the placeholder is what you'll see when that happens
 - **Unpublished mod detection** — Mods removed from the Forge are automatically cleared from the display, verified in a single batched lookup rather than one request per mod
 - **Fails safe, never guesses** — Ambiguous matches are reported as unmatched rather than guessed at, and any network failure leaves the display untouched instead of hiding mods
 - **Low resource usage** — Connection pooling, shared fonts, a smart timer that sleeps when the window is hidden, and state writes skipped when nothing changed
@@ -106,3 +112,5 @@ Click **Local Mods** to check your own installed mods against the Forge — enti
 Huge thanks to **AlexTushonka** — living legend — for taking on the Forge, keeping it running at sp-mod.com, and being genuinely great to deal with. This app is only useful because that site exists.
 
 Local mod scanning was inspired by Refringe's **Check Mods** CLI.
+
+Thanks to **[scrmjt](https://github.com/scrmjt)** for the SPT version filter, the choosable check schedule, and properly centred button labels — the headline changes in 3.4.5, contributed in [#27](https://github.com/JoelHauser/SPTChecker/pull/27).

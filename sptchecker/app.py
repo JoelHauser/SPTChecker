@@ -6,59 +6,44 @@ import webbrowser
 from datetime import datetime
 
 import pystray
-from PIL import Image, ImageDraw, ImageTk
+from PIL import Image, ImageTk
 
 from .config import (
-    ACCENT_NEW, ACCENT_UPD, BG, CARD_BG,
+    ACCENT_DANGER, ACCENT_NEW, ACCENT_UPD, APP_VERSION, BG, BORDER, CARD_BG,
     CATEGORY_COLOR_DEFAULT, CATEGORY_COLORS,
-    CHECK_INTERVAL_MINUTES,
-    DISPLAY_FIELDS, FORGE_MOD_PAGE, FORGE_URL, MAX_PER_CATEGORY,
-    SEPARATOR, STATE_FIELDS, STATUS_BG, TEXT, TEXT_BRIGHT, TEXT_DIM,
-    UPDATE_CHECK_INTERVAL_HOURS,
-    WINDOW_DEFAULT_GEOMETRY, WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH,
+    CHECK_INTERVAL_CHOICES, CHECK_INTERVAL_MINUTES, DEFAULT_SPT_VERSION_FILTER,
+    DISPLAY_FIELDS, FORGE_MOD_PAGE, FORGE_URL, LAYOUT_VERSION, MAX_PER_CATEGORY,
+    SEPARATOR, SPT_VERSIONS_REFRESH_HOURS, STATE_FIELDS, STATUS_BG, TEXT,
+    TEXT_BRIGHT, TEXT_DIM, TEXT_FAINT, UPDATE_CHECK_INTERVAL_HOURS,
+    WINDOW_DEFAULT_GEOMETRY, WINDOW_DEFAULT_WIDTH, WINDOW_MIN_HEIGHT,
+    WINDOW_MIN_WIDTH,
 )
-from .feed import ForgeBlocked, fetch_feeds, unpublished_links
+from .feed import ForgeBlocked, fetch_feeds, fetch_spt_versions, unpublished_links
 from .localmods import detect_spt_version, scan_installed_mods
 from .matcher import match_local_mods
 from .platform import (
-    badge_icon, disable_show_animation, is_startup_enabled, load_app_icon,
-    refresh_startup_if_stale, send_toast, set_dark_title_bar, set_dpi_aware,
-    set_startup_enabled,
+    badge_icon, create_show_event, disable_show_animation, is_startup_enabled,
+    load_app_icon, refresh_startup_if_stale, register_show_protocol, send_toast,
+    set_dark_title_bar, set_dpi_aware, set_startup_enabled, wait_for_show_request,
 )
 from .state import (
     compute_stats, download_thumb, load_state, placeholder_thumb, purge_old_thumbs, save_state,
 )
+from .theme import (
+    ToggleSwitch, chip, dot, flat_button, font, info_glyph, ring, rounded_photo,
+)
 from .update import check_for_update
-from .widgets import LocalScanSettingsWindow, ModCard, StatsWindow, flat_button
+from .widgets import (
+    CARD_GAP, ContextMenu, LocalScanSettingsWindow, ModCard, StatsWindow,
+    build_scroll_area, card_pitch,
+)
 
-_ICON_SUPERSAMPLE = 4
-
-
-def _render_info_icon(color, size=16):
-    """Render a small 'i' info icon via PIL + LANCZOS downscale for real anti-aliasing
-    -- Tk Canvas primitives (create_oval/create_line) aren't anti-aliased on Windows
-    and look jagged/pixelated at these small sizes, independent of display scaling."""
-    big = size * _ICON_SUPERSAMPLE
-    img = Image.new("RGBA", (big, big), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    pad = _ICON_SUPERSAMPLE
-    draw.ellipse([pad, pad, big - pad, big - pad], outline=color, width=_ICON_SUPERSAMPLE)
-    cx = big // 2
-    dot_r = _ICON_SUPERSAMPLE * 1.1
-    dot_cy = big * 0.28
-    draw.ellipse([cx - dot_r, dot_cy - dot_r, cx + dot_r, dot_cy + dot_r], fill=color)
-    draw.line([cx, big * 0.45, cx, big * 0.74], fill=color, width=int(_ICON_SUPERSAMPLE * 1.3))
-    img = img.resize((size, size), Image.LANCZOS)
-    return ImageTk.PhotoImage(img)
-
-
-def _render_dot(color, size=10):
-    """Render a small filled circle via PIL + LANCZOS downscale (see _render_info_icon)."""
-    big = size * _ICON_SUPERSAMPLE
-    img = Image.new("RGBA", (big, big), (0, 0, 0, 0))
-    ImageDraw.Draw(img).ellipse([0, 0, big - 1, big - 1], fill=color)
-    img = img.resize((size, size), Image.LANCZOS)
-    return ImageTk.PhotoImage(img)
+# Layout constants shared between the widgets that use them and _size_to_fit,
+# which has to reproduce the same spacing to work out how tall the window needs
+# to be for a full column.
+BODY_PAD_X = 14
+BODY_PAD_TOP = 12
+COL_HEADER_GAP = 8
 
 
 class SPTCheckerApp:
@@ -70,7 +55,8 @@ class SPTCheckerApp:
         self.root = tk.Tk()
         self.root.title("SPTChecker")
         self.root.configure(bg=BG)
-        self.root.geometry(self._load_geometry())
+        saved_geometry = self._load_geometry()
+        self.root.geometry(saved_geometry or WINDOW_DEFAULT_GEOMETRY)
         self.root.minsize(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
 
         set_dark_title_bar(self.root, show=not start_hidden)
@@ -82,6 +68,10 @@ class SPTCheckerApp:
 
         self._photos = {}  # frame -> PhotoImage refs for its current cards
         self._checking = False
+        self._recheck_pending = False
+        # When the SPT release list was last fetched (time.monotonic); never, at
+        # launch, so the first check refreshes it -- see _refresh_spt_versions.
+        self._spt_versions_at = float("-inf")
         self._scanning = False
         self._local_scan_window = None
         self._next_check_ts = None
@@ -99,11 +89,20 @@ class SPTCheckerApp:
             pass
 
         self._build_ui()
+        # Applied on every launch, not just the first: the header's real
+        # requirement depends on the display scaling of whichever machine this
+        # is running on now, which a size saved elsewhere knows nothing about.
+        self.root.minsize(self._min_width(), WINDOW_MIN_HEIGHT)
+        if not saved_geometry:
+            # Only on a first launch (or the first after a layout change):
+            # a size the user chose themselves is never overridden.
+            self._size_to_fit()
         self._setup_tray()
+        self._setup_toast_activation()
 
         self.root.protocol("WM_DELETE_WINDOW", self._hide_to_tray)
 
-        self.root.after(400, self._check_now)
+        self.root.after(400, self._start_schedule)
         # Local mod scanning never runs on its own, even with the feature
         # enabled and a folder already set -- only an explicit click on
         # Scan Now (in _show_local_scan) starts one.
@@ -111,13 +110,61 @@ class SPTCheckerApp:
     # ── Window geometry ─────────────────────────────────────────────────
 
     def _load_geometry(self):
-        geometry = self.state.get("window_geometry", "")
-        m = re.fullmatch(r"(\d+)x(\d+)", geometry)
+        """The saved window size, or None when there isn't a usable one.
+
+        A geometry saved under a different LAYOUT_VERSION is discarded: it was
+        chosen to fit cards of a different height, and restoring it is exactly
+        what would leave a returning user looking at a window that scrolls on
+        the first launch after an update. They get one re-fit, then their own
+        sizing is respected again.
+        """
+        if self.state.get("layout_version") != LAYOUT_VERSION:
+            return None
+        m = re.fullmatch(r"(\d+)x(\d+)", self.state.get("window_geometry", ""))
         if not m:
-            return WINDOW_DEFAULT_GEOMETRY
+            return None
         w = max(WINDOW_MIN_WIDTH, int(m.group(1)))
         h = max(WINDOW_MIN_HEIGHT, int(m.group(2)))
         return f"{w}x{h}"
+
+    def _min_width(self):
+        """Narrowest the window can be before the header controls collide.
+
+        Measured rather than fixed: the header is laid out by its fonts, so it
+        needs 596px at 100% display scaling and 746px at 200% -- a constant
+        that looks generous on one machine clips the buttons on another.
+        """
+        self.root.update_idletasks()
+        return max(WINDOW_MIN_WIDTH, self._header_bar.winfo_reqwidth() + 8)
+
+    def _size_to_fit(self):
+        """Size the window so a full column of cards fits without scrolling.
+
+        Height is measured from the real widgets rather than assumed from
+        constants: the header, the column headings and the status bar are all
+        sized by their fonts, so their heights change with the Windows display
+        scaling setting. A hardcoded default that fits seven cards at 100%
+        clips them at 125%, which is the more common setting on laptops.
+
+        Width stays deliberately tight -- the two columns are the content, and
+        extra width past the point where titles stop being ellipsized just
+        stretches the cards.
+        """
+        chrome = (self._header_bar.winfo_reqheight()
+                  + self._status_bar.winfo_reqheight()
+                  + self._col_header.winfo_reqheight() + COL_HEADER_GAP
+                  + BODY_PAD_TOP)
+        wanted_h = chrome + MAX_PER_CATEGORY * card_pitch(self.root)
+        # Not winfo_width(): with --background the window is never deiconified,
+        # and an unmapped window reports a width of 1.
+        wanted_w = max(WINDOW_DEFAULT_WIDTH, self._min_width())
+
+        # Never open larger than the display. If the screen genuinely cannot
+        # show every card the columns scroll, which is what that fallback is
+        # there for -- but nothing is gained by opening off the bottom edge.
+        max_h = int(self.root.winfo_screenheight() * 0.90)
+        max_w = int(self.root.winfo_screenwidth() * 0.95)
+        self.root.geometry(f"{min(wanted_w, max_w)}x{min(wanted_h, max_h)}")
 
     def _save_geometry(self):
         if not self._visible:
@@ -126,101 +173,193 @@ class SPTCheckerApp:
         h = self.root.winfo_height()
         if w > 1 and h > 1:
             self.state["window_geometry"] = f"{w}x{h}"
+            self.state["layout_version"] = LAYOUT_VERSION
             save_state(self.state)
 
     # ── UI construction ────────────────────────────────────────────────
 
     def _build_ui(self):
-        hdr = tk.Frame(self.root, bg=BG, pady=4)
-        hdr.pack(fill="x", padx=12)
+        self._build_header()
+        self._build_body()
+        self._build_status_bar()
 
-        self._legend_icon_dim = _render_info_icon(TEXT_DIM)
-        self._legend_icon_bright = _render_info_icon(TEXT_BRIGHT)
-        self._legend_icon = tk.Label(hdr, image=self._legend_icon_dim, bg=BG, cursor="hand2")
-        self._legend_icon.pack(side="left")
-        self._legend_icon.bind("<Enter>", self._legend_enter)
-        self._legend_icon.bind("<Leave>", self._legend_leave)
+    # -- Header ---------------------------------------------------------
 
-        flat_button(hdr, "Stats", self._show_stats).pack(side="left", padx=(6, 0))
-        flat_button(hdr, "Local Mods", self._show_local_scan).pack(side="left", padx=(6, 0))
+    def _build_header(self):
+        """A full-width app bar in the chrome color rather than a strip of
+        loose controls floating on the window background: it gives the window
+        a top edge, and it is what separates the app's own controls from the
+        mod list they act on."""
+        bar = self._header_bar = tk.Frame(self.root, bg=STATUS_BG)
+        bar.pack(fill="x", side="top")
+        hdr = tk.Frame(bar, bg=STATUS_BG, pady=9)
+        hdr.pack(fill="x", padx=14)
+        tk.Frame(bar, bg=SEPARATOR, height=1).pack(fill="x")
 
-        self._btn = flat_button(hdr, "Check Now", self._check_now)
+        brand_icon = ImageTk.PhotoImage(
+            rounded_photo(self._app_icon.resize((22, 22), Image.LANCZOS), radius=5))
+        self._brand_icon = brand_icon
+        tk.Label(hdr, image=brand_icon, bg=STATUS_BG).pack(side="left")
+        tk.Label(hdr, text="SPTChecker", font=font(11, "bold"), fg=TEXT_BRIGHT,
+                 bg=STATUS_BG).pack(side="left", padx=(9, 0))
+        tk.Label(hdr, text=f"v{APP_VERSION}", font=font(8), fg=TEXT_FAINT,
+                 bg=STATUS_BG).pack(side="left", padx=(7, 0), pady=(3, 0))
+
+        # Packed right to left, so the primary action anchors the far corner.
+        self._btn = flat_button(hdr, "Check Now", self._check_now, accent=ACCENT_NEW,
+                                bg=STATUS_BG, padx=14, pady=5)
         self._btn.pack(side="right")
         self._tooltip_id = None
         self._tooltip_win = None
         self._bind_tooltip(self._btn, "Check the Forge for new or updated mods")
 
-        chk = tk.Checkbutton(
-            hdr, text="Run on Startup", font=("Segoe UI", 8),
-            fg=TEXT_DIM, bg=BG, selectcolor=CARD_BG,
-            activebackground=BG, activeforeground=TEXT,
-            variable=self._startup_var, command=self._toggle_startup,
-        )
-        chk.pack(side="right", padx=(0, 10))
+        # Beside Check Now rather than among the popups: it decides what every
+        # check fetches, and its label is the only sign on screen that the
+        # columns are being filtered at all.
+        self._spt_btn = flat_button(hdr, self._spt_picker_text(), self._show_spt_menu,
+                                    bg=STATUS_BG)
+        self._spt_btn.pack(side="right", padx=(0, 8))
 
+        flat_button(hdr, "Local Mods", self._show_local_scan,
+                    bg=STATUS_BG).pack(side="right", padx=(0, 8))
+        flat_button(hdr, "Stats", self._show_stats,
+                    bg=STATUS_BG).pack(side="right", padx=(0, 8))
+
+        ToggleSwitch(hdr, "Run on startup", self._startup_var,
+                     command=self._toggle_startup, font_size=8,
+                     bg=STATUS_BG).pack(side="right", padx=(0, 16))
+
+        self._legend_icon_dim = info_glyph(15, TEXT_FAINT)
+        self._legend_icon_bright = info_glyph(15, TEXT_BRIGHT)
+        self._legend_icon = tk.Label(hdr, image=self._legend_icon_dim, bg=STATUS_BG,
+                                     cursor="hand2")
+        self._legend_icon.pack(side="right", padx=(0, 16))
+        self._legend_icon.bind("<Enter>", self._legend_enter)
+        self._legend_icon.bind("<Leave>", self._legend_leave)
+
+    # -- Columns --------------------------------------------------------
+
+    def _build_body(self):
         body = tk.Frame(self.root, bg=BG)
-        body.pack(fill="both", expand=True, padx=12, pady=(0, 4))
+        body.pack(fill="both", expand=True, padx=BODY_PAD_X, pady=(BODY_PAD_TOP, 0))
         body.columnconfigure(0, weight=1, uniform="col")
         body.columnconfigure(2, weight=1, uniform="col")
-
-        tk.Label(body, text="● NEW MODS", font=("Segoe UI", 10, "bold"),
-                 fg=ACCENT_NEW, bg=BG, anchor="w").grid(row=0, column=0, sticky="w", pady=(0, 3))
-        self._new_frame = tk.Frame(body, bg=BG)
-        self._new_frame.grid(row=1, column=0, sticky="nsew")
-
-        tk.Frame(body, bg=SEPARATOR, width=1).grid(
-            row=0, column=1, rowspan=2, sticky="ns", padx=8)
-
-        tk.Label(body, text="● UPDATED MODS", font=("Segoe UI", 10, "bold"),
-                 fg=ACCENT_UPD, bg=BG, anchor="w").grid(row=0, column=2, sticky="w", pady=(0, 3))
-        self._upd_frame = tk.Frame(body, bg=BG)
-        self._upd_frame.grid(row=1, column=2, sticky="nsew")
         body.rowconfigure(1, weight=1)
 
-        self._set_placeholder(self._new_frame, "Checking…")
-        self._set_placeholder(self._upd_frame, "Checking…")
+        self._new_count, self._col_header = self._column_header(
+            body, 0, "New Mods", ACCENT_NEW)
+        self._upd_count, _ = self._column_header(body, 2, "Updated Mods", ACCENT_UPD)
 
-        bar = tk.Frame(self.root, bg=STATUS_BG, pady=3)
+        # A plain gutter instead of the divider rule that used to sit here: two
+        # columns of outlined cards already read as two columns.
+        tk.Frame(body, bg=BG, width=BODY_PAD_X).grid(
+            row=0, column=1, rowspan=2, sticky="ns")
+
+        new_col = tk.Frame(body, bg=BG)
+        new_col.grid(row=1, column=0, sticky="nsew")
+        self._new_frame = build_scroll_area(new_col)
+
+        upd_col = tk.Frame(body, bg=BG)
+        upd_col.grid(row=1, column=2, sticky="nsew")
+        self._upd_frame = build_scroll_area(upd_col)
+
+        self._set_placeholder(self._new_frame, "Checking the Forge…")
+        self._set_placeholder(self._upd_frame, "Checking the Forge…")
+
+    def _column_header(self, parent, column, text, color):
+        """Returns (count label, row). _apply keeps the count in step with the
+        column; the row is measured by _size_to_fit."""
+        row = tk.Frame(parent, bg=BG)
+        row.grid(row=0, column=column, sticky="ew", pady=(0, COL_HEADER_GAP))
+        swatch = dot(8, color)
+        lbl = tk.Label(row, image=swatch, bg=BG)
+        lbl._swatch = swatch
+        lbl.pack(side="left", padx=(0, 8))
+        tk.Label(row, text=text.upper(), font=font(9, "bold"), fg=color,
+                 bg=BG).pack(side="left")
+        count = tk.Label(row, text="", font=font(9, "bold"), fg=TEXT_FAINT, bg=BG)
+        count.pack(side="left", padx=(8, 0))
+        tk.Frame(row, bg=SEPARATOR, height=1).pack(
+            side="left", fill="x", expand=True, padx=(12, 0), pady=(1, 0))
+        return count, row
+
+    # -- Status bar -----------------------------------------------------
+
+    def _build_status_bar(self):
+        bar = self._status_bar = tk.Frame(self.root, bg=STATUS_BG)
         bar.pack(fill="x", side="bottom")
-        self._forge_dot = tk.Label(bar, text="●", font=("Segoe UI", 6),
-                                   fg=TEXT_DIM, bg=STATUS_BG)
-        self._forge_dot.pack(side="left", padx=(10, 2))
+        tk.Frame(bar, bg=SEPARATOR, height=1).pack(fill="x", side="top")
+        inner = tk.Frame(bar, bg=STATUS_BG, pady=7)
+        inner.pack(fill="x", padx=14)
+
+        self._forge_dot_ok = dot(7, ACCENT_NEW)
+        self._forge_dot_bad = dot(7, ACCENT_DANGER)
+        self._forge_dot_idle = dot(7, TEXT_FAINT)
+        self._forge_dot = tk.Label(inner, image=self._forge_dot_idle, bg=STATUS_BG)
+        self._forge_dot.pack(side="left", padx=(0, 8))
         self._bind_tooltip(
             self._forge_dot,
             "Green: last check reached the Forge OK\nRed: last check failed (retrying)",
         )
 
-        self._lbl_status = tk.Label(bar, text="Starting…", font=("Segoe UI", 8),
+        self._lbl_status = tk.Label(inner, text="Starting…", font=font(8),
                                     fg=TEXT_DIM, bg=STATUS_BG)
         self._lbl_status.pack(side="left")
 
-        self._lbl_timer = tk.Label(bar, text="", font=("Segoe UI", 8),
-                                   fg=TEXT_DIM, bg=STATUS_BG)
-        self._lbl_timer.pack(side="right", padx=10)
+        self._lbl_timer = tk.Label(inner, text="", font=font(8),
+                                   fg=TEXT_FAINT, bg=STATUS_BG, cursor="hand2")
+        self._lbl_timer.pack(side="right")
+        # The schedule is changed from the countdown that shows it, rather than
+        # from yet another control in a header already measured to its limit.
+        self._lbl_timer.bind("<Button-1>", self._show_interval_menu)
+        self._lbl_timer.bind("<Enter>", lambda _e: self._lbl_timer.configure(fg=TEXT))
+        self._lbl_timer.bind("<Leave>", lambda _e: self._lbl_timer.configure(fg=TEXT_FAINT))
 
-        # Built but left unpacked -- it only appears once a newer release is
+        # Left unbuilt -- the update chip only appears once a newer release is
         # actually found, so the bar stays quiet for anyone already current.
+        self._status_inner = inner
         self._update_url = FORGE_MOD_PAGE
-        self._update_lbl = tk.Label(bar, text="", font=("Segoe UI", 8, "bold"),
-                                    fg=ACCENT_NEW, bg=STATUS_BG, cursor="hand2")
-        self._update_lbl.bind(
-            "<Button-1>", lambda _e: webbrowser.open(self._update_url))
+        self._update_lbl = None
 
     @staticmethod
     def _set_placeholder(frame, text):
+        """The empty/waiting state for a column. A ring glyph above the line of
+        text, because a lone sentence of dim gray in an otherwise blank column
+        reads as a label that failed to load rather than as "nothing here"."""
         for w in frame.winfo_children():
             w.destroy()
-        tk.Label(frame, text=text, font=("Segoe UI", 9), fg=TEXT_DIM,
-                 bg=BG, justify="center").pack(pady=20)
+        holder = tk.Frame(frame, bg=BG)
+        holder.pack(fill="x", pady=(54, 0))
+        glyph = ring(26, SEPARATOR, width=2)
+        lbl = tk.Label(holder, image=glyph, bg=BG)
+        lbl._glyph = glyph
+        lbl.pack()
+        tk.Label(holder, text=text, font=font(9), fg=TEXT_FAINT,
+                 bg=BG, justify="center", wraplength=250).pack(pady=(12, 0))
 
     # ── Tooltip ─────────────────────────────────────────────────────────
+
+    def _popup_shell(self, widget, pad_x=10, pad_y=7):
+        """A bordered dark panel anchored under `widget`, used for both the
+        hover tooltips and the category legend. The 1px outer frame is doing
+        real work: an unbordered dark popup over a dark window has no edge, so
+        it reads as text spilling onto the page rather than as a panel."""
+        x = widget.winfo_rootx()
+        y = widget.winfo_rooty() + widget.winfo_height() + 6
+        tw = tk.Toplevel(self.root)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry(f"+{x}+{y}")
+        tw.configure(bg=BORDER)
+        inner = tk.Frame(tw, bg=CARD_BG, padx=pad_x, pady=pad_y)
+        inner.pack(padx=1, pady=1)
+        return tw, inner
 
     def _bind_tooltip(self, widget, text):
         widget.bind("<Enter>", lambda _e: self._tooltip_hover_start(widget, text))
         widget.bind("<Leave>", self._tooltip_hover_end)
 
     def _tooltip_hover_start(self, widget, text):
-        self._tooltip_id = self.root.after(1000, lambda: self._show_tooltip(widget, text))
+        self._tooltip_id = self.root.after(700, lambda: self._show_tooltip(widget, text))
 
     def _tooltip_hover_end(self, _e=None):
         if self._tooltip_id:
@@ -232,19 +371,14 @@ class SPTCheckerApp:
 
     def _show_tooltip(self, widget, text):
         self._tooltip_id = None
-        x = widget.winfo_rootx()
-        y = widget.winfo_rooty() + widget.winfo_height() + 4
-        tw = tk.Toplevel(self.root)
-        tw.wm_overrideredirect(True)
-        tw.wm_geometry(f"+{x}+{y}")
-        tw.configure(bg=CARD_BG)
-        tk.Label(tw, text=text, font=("Segoe UI", 8), fg=TEXT, bg=CARD_BG,
-                 padx=8, pady=4, justify="left").pack()
+        tw, inner = self._popup_shell(widget)
+        tk.Label(inner, text=text, font=font(8), fg=TEXT, bg=CARD_BG,
+                 justify="left").pack()
         self._tooltip_win = tw
 
     def _legend_enter(self, _e):
         self._legend_icon.configure(image=self._legend_icon_bright)
-        self._tooltip_id = self.root.after(500, self._show_legend)
+        self._tooltip_id = self.root.after(400, self._show_legend)
 
     def _legend_leave(self, _e=None):
         self._legend_icon.configure(image=self._legend_icon_dim)
@@ -252,37 +386,24 @@ class SPTCheckerApp:
 
     def _show_legend(self):
         self._tooltip_id = None
-        x = self._legend_icon.winfo_rootx()
-        y = self._legend_icon.winfo_rooty() + self._legend_icon.winfo_height() + 4
-        tw = tk.Toplevel(self.root)
-        tw.wm_overrideredirect(True)
-        tw.wm_geometry(f"+{x}+{y}")
-        tw.configure(bg=CARD_BG)
-
-        inner = tk.Frame(tw, bg=CARD_BG, padx=10, pady=8)
-        inner.pack()
-        tk.Label(inner, text="CARD COLOR MEANS CATEGORY", font=("Segoe UI", 8, "bold"),
-                 fg=TEXT_DIM, bg=CARD_BG, anchor="w").grid(
-            row=0, column=0, columnspan=4, sticky="w", pady=(0, 6))
+        tw, inner = self._popup_shell(self._legend_icon, pad_x=14, pad_y=12)
+        tk.Label(inner, text="CARD BORDER = CATEGORY", font=font(8, "bold"),
+                 fg=TEXT_FAINT, bg=CARD_BG, anchor="w").grid(
+            row=0, column=0, columnspan=4, sticky="w", pady=(0, 9))
 
         tw._dot_photos = []  # keep PhotoImage refs alive for this popup's lifetime
         cols = 2
-        for i, (category, color) in enumerate(CATEGORY_COLORS.items()):
+        entries = list(CATEGORY_COLORS.items()) + [("Other / uncategorized",
+                                                    CATEGORY_COLOR_DEFAULT)]
+        for i, (category, color) in enumerate(entries):
             row, col = i // cols + 1, (i % cols) * 2
-            dot = _render_dot(color)
-            tw._dot_photos.append(dot)
-            tk.Label(inner, image=dot, bg=CARD_BG).grid(
-                row=row, column=col, sticky="w", padx=(0, 6), pady=2)
-            tk.Label(inner, text=category, font=("Segoe UI", 8), fg=TEXT, bg=CARD_BG,
-                     anchor="w").grid(row=row, column=col + 1, sticky="w", padx=(0, 14), pady=2)
-
-        last_row = len(CATEGORY_COLORS) // cols + 2
-        other_dot = _render_dot(CATEGORY_COLOR_DEFAULT)
-        tw._dot_photos.append(other_dot)
-        tk.Label(inner, image=other_dot, bg=CARD_BG).grid(
-            row=last_row, column=0, sticky="w", padx=(0, 6), pady=(6, 0))
-        tk.Label(inner, text="Other / uncategorized", font=("Segoe UI", 8), fg=TEXT, bg=CARD_BG,
-                 anchor="w").grid(row=last_row, column=1, columnspan=3, sticky="w", pady=(6, 0))
+            swatch = dot(9, color)
+            tw._dot_photos.append(swatch)
+            tk.Label(inner, image=swatch, bg=CARD_BG).grid(
+                row=row, column=col, sticky="w", padx=(0, 8), pady=3)
+            tk.Label(inner, text=category, font=font(8), fg=TEXT, bg=CARD_BG,
+                     anchor="w").grid(row=row, column=col + 1, sticky="w",
+                                      padx=(0, 18), pady=3)
 
         self._tooltip_win = tw
 
@@ -298,6 +419,172 @@ class SPTCheckerApp:
         stats = compute_stats(self.state.get("mods", {}))
         StatsWindow(self.root, stats)
 
+    # ── SPT version filter ─────────────────────────────────────────────
+
+    # state["spt_version_filter"] holds the choice, and absent means
+    # DEFAULT_SPT_VERSION_FILTER: "latest" (the newest SPT release), "4.0.x"
+    # (the newest release in that line), "4.0.13" (exactly that release),
+    # "auto" (whatever the Local Mods install runs), or "all". Choices that
+    # float are resolved again on every check, so a new SPT release moves the
+    # filter along without the picker being touched.
+
+    def _spt_choice(self):
+        return self.state.get("spt_version_filter", DEFAULT_SPT_VERSION_FILTER)
+
+    def _feed_spt_version(self):
+        """The SPT release the feed is filtered to right now, or "" for none.
+
+        A choice that can't be resolved -- "auto" with no install to read, or
+        "latest" before the release list has ever loaded -- leaves the feed
+        unfiltered rather than empty: the picker says which, and a blank
+        column would only look broken.
+        """
+        choice = self._spt_choice()
+        if choice == "all":
+            return ""
+        if choice == "auto":
+            path = self.state.get("spt_install_path", "")
+            return (detect_spt_version(path) if path else None) or ""
+        releases = self.state.get("spt_versions", [])
+        if choice == "latest":
+            return releases[0] if releases else ""
+        if choice.endswith(".x"):
+            return next((r for r in releases if r.rsplit(".", 1)[0] == choice[:-2]), "")
+        return choice
+
+    def _spt_picker_text(self):
+        # Kept short: the header's minimum width is measured from its controls,
+        # and a label much longer than "SPT: 4.0.13" pushes it past the 720px
+        # default at 100% scaling for every user. So the label names the
+        # release being filtered for, and the menu says how it was chosen.
+        choice = self._spt_choice()
+        version = self._feed_spt_version()
+        if choice == "auto":
+            text = f"{version or 'All'} (auto)"
+        elif choice == "all":
+            text = "All"
+        else:
+            # A floating choice that hasn't resolved yet names itself instead.
+            text = version or choice
+        return f"SPT: {text}  ▾"
+
+    def _update_spt_picker(self):
+        self._spt_btn.configure(text=self._spt_picker_text())
+        # The button is sized by its label, so a longer one widens the header
+        # past the minimum measured at startup -- re-measure, or the controls
+        # can collide in a window dragged down to the old minimum.
+        self.root.minsize(self._min_width(), WINDOW_MIN_HEIGHT)
+
+    def _spt_release_lines(self):
+        """The cached SPT releases grouped by minor line, newest first:
+        [("4.1", ["4.1.5", ...]), ("4.0", ["4.0.13", ...]), ...]."""
+        lines = {}
+        for release in self.state.get("spt_versions", []):
+            lines.setdefault(release.rsplit(".", 1)[0], []).append(release)
+        return list(lines.items())
+
+    def _show_spt_menu(self):
+        """The picker's menu: the latest release, auto-detect and every version,
+        then one entry per minor line that opens that line's releases.
+
+        Two levels because a flat list is 50 releases long -- taller than the
+        screen -- and a line's exact releases can't be dropped in favour of its
+        latest: constraints are decided per patch ("~4.0.12" covers 4.0.12 and
+        4.0.13 but not 4.0.11), so someone held on an older patch needs it.
+        """
+        choice = self._spt_choice()
+        releases = self.state.get("spt_versions", [])
+        path = self.state.get("spt_install_path", "")
+        detected = detect_spt_version(path) if path else None
+        if detected:
+            auto = f"Match my install ({detected})"
+        elif path:
+            auto = "Match my install (SPT not found)"
+        else:
+            auto = "Match my install (set its folder in Local Mods)"
+        latest = f"Latest release ({releases[0]})" if releases else "Latest release"
+        items = [
+            (self._menu_label(latest, choice == "latest"), lambda: self._set_spt_filter("latest")),
+            (self._menu_label(auto, choice == "auto"), lambda: self._set_spt_filter("auto")),
+            (self._menu_label("All SPT versions", choice == "all"),
+             lambda: self._set_spt_filter("all")),
+        ]
+        lines = self._spt_release_lines()
+        if lines:
+            items.append(("-", None))
+            for line, line_releases in lines:
+                selected = choice == f"{line}.x" or choice in line_releases
+                items.append((self._menu_label(f"SPT {line}  ›", selected),
+                              lambda line=line: self._show_spt_line_menu(line)))
+        self._show_spt_popup(items)
+
+    def _show_spt_line_menu(self, line):
+        """One line's releases, led by the choice that follows its newest.
+
+        Written "Latest 4.0.x": x is how SPT release lines are commonly written,
+        and "Latest" is what separates this from matching any 4.0 patch -- it
+        filters for the newest one alone, moving when a new patch lands.
+        """
+        choice = self._spt_choice()
+        releases = dict(self._spt_release_lines()).get(line, [])
+        if not releases:
+            return
+        items = [(self._menu_label(f"Latest {line}.x ({releases[0]})", choice == f"{line}.x"),
+                  lambda: self._set_spt_filter(f"{line}.x")), ("-", None)]
+        items += [(self._menu_label(r, r == choice), lambda r=r: self._set_spt_filter(r))
+                  for r in releases]
+        self._show_spt_popup(items)
+
+    @staticmethod
+    def _menu_label(text, selected):
+        # Marked after the text, not before it: the menu font is proportional,
+        # so a leading mark would knock the selected row out of line.
+        return f"{text}  ✓" if selected else text
+
+    def _show_spt_popup(self, items):
+        btn = self._spt_btn
+        menu = ContextMenu(self.root, items)
+        menu.update_idletasks()
+        # Right-aligned under the picker, which sits against the header's right
+        # edge -- hung from its left corner, a wide menu ran past the window.
+        menu.show(btn.winfo_rootx() + btn.winfo_width() - menu.winfo_reqwidth(),
+                  btn.winfo_rooty() + btn.winfo_height() + 4)
+
+    def _set_spt_filter(self, choice):
+        if choice == self._spt_choice():
+            return
+        before = self._feed_spt_version()
+        self.state["spt_version_filter"] = choice
+        save_state(self.state)
+        self._update_spt_picker()
+        # Two choices can name the same release -- "latest" and "4.1.x" are
+        # both 4.1.5 today -- and moving between them changes nothing a check
+        # would fetch.
+        if self._feed_spt_version() != before:
+            self._recheck()
+
+    def _refresh_spt_versions(self):
+        """Refresh the cached SPT release list, at most once a day. Runs on the
+        check thread, before the check resolves its filter.
+
+        Part of the check rather than on a timer of its own because "latest",
+        the default, can't be resolved without the list: a timer that fired
+        after startup would leave a first launch's first check unfiltered until
+        the next one. Still no more than daily -- SPT releases are rare, and
+        asking on every check would be dozens of requests a day to learn
+        nothing.
+        """
+        fresh = (time.monotonic() - self._spt_versions_at
+                 < SPT_VERSIONS_REFRESH_HOURS * 3600)
+        if fresh and self.state.get("spt_versions"):
+            return
+        # None on failure: the list already saved stays, and the next check
+        # tries again.
+        releases = fetch_spt_versions()
+        if releases:
+            self.state["spt_versions"] = releases
+            self._spt_versions_at = time.monotonic()
+
     # ── Local mod scan (opt-in) ───────────────────────────────────────
 
     def _show_local_scan(self):
@@ -311,6 +598,8 @@ class SPTCheckerApp:
             on_toggle=self._toggle_local_scan,
             on_path_change=self._set_local_scan_path,
             on_scan_now=self._scan_local_now,
+            on_endorse=self._mark_endorsed,
+            endorsed=self.state.get("endorsed", []),
         )
         if self._scanning:
             # A scan is already running (e.g. the startup auto-scan) --
@@ -321,6 +610,19 @@ class SPTCheckerApp:
             if cached:
                 self._local_scan_window.set_results(cached)
 
+    def _mark_endorsed(self, link):
+        """Remember that this mod was opened to be endorsed.
+
+        A local note only: the Forge API is read-only, so the app has no way to
+        read back whether the endorsement actually happened. It exists so a mod
+        already dealt with looks different from one still waiting, not as a
+        claim about the Forge's own records.
+        """
+        endorsed = self.state.setdefault("endorsed", [])
+        if link not in endorsed:
+            endorsed.append(link)
+            save_state(self.state)
+
     def _toggle_local_scan(self, enabled):
         self.state["local_scan_enabled"] = enabled
         save_state(self.state)
@@ -328,6 +630,11 @@ class SPTCheckerApp:
     def _set_local_scan_path(self, path):
         self.state["spt_install_path"] = path
         save_state(self.state)
+        if self._spt_choice() == "auto":
+            # The feed takes its SPT version from this folder, so a different
+            # folder can mean a different release to filter for.
+            self._update_spt_picker()
+            self._recheck()
 
     def _scan_local_now(self):
         if self._scanning:
@@ -426,6 +733,25 @@ class SPTCheckerApp:
         if self._next_check_ts:
             self._tick_timer()
 
+    def _setup_toast_activation(self):
+        """Make a click on a toast raise this window.
+
+        Windows shell-executes sptchecker://show, which starts a second copy of
+        the app; that copy signals this event and exits rather than opening a
+        rival window. The wait runs on its own thread because it blocks
+        indefinitely, and hands back to Tk the same way the tray does.
+        """
+        register_show_protocol()
+        self._show_event = create_show_event()
+        if self._show_event:
+            threading.Thread(target=self._watch_show_requests, daemon=True).start()
+
+    def _watch_show_requests(self):
+        while wait_for_show_request(self._show_event):
+            # _do_show touches widgets, so it has to run on the UI thread --
+            # same hand-off _tray_show makes from pystray's thread.
+            self.root.after(0, self._do_show)
+
     def _tray_check(self, _icon=None, _item=None):
         self.root.after(0, self._check_now)
 
@@ -467,16 +793,22 @@ class SPTCheckerApp:
                         UPDATE_CHECK_INTERVAL_HOURS * 3600 * 1000)
 
     def _show_update_available(self, version, url=FORGE_MOD_PAGE):
-        """Surface the newer release in the status bar. Packed on first
-        discovery only -- re-packing on every subsequent check would shuffle
-        the bar's layout for no reason."""
+        """Surface the newer release in the status bar as a chip -- the one
+        thing in that bar worth clicking, so it should not read as another line
+        of status text. Rebuilt rather than reconfigured because the chip's
+        pill is rendered to fit its label, and the version only changes on the
+        rare occasion a newer release actually appears."""
         self._update_url = url
-        self._update_lbl.configure(text=f"●  v{version} available")
-        if not self._update_lbl.winfo_ismapped():
-            self._update_lbl.pack(side="right", padx=(0, 4))
-            self._bind_tooltip(
-                self._update_lbl,
-                f"SPTChecker v{version} is on the Forge.\nClick to open its page.")
+        if self._update_lbl is not None:
+            self._update_lbl.destroy()
+        self._update_lbl = chip(self._status_inner, f"↑  v{version} available",
+                                ACCENT_NEW, surface=STATUS_BG, font_size=8)
+        self._update_lbl.configure(cursor="hand2")
+        self._update_lbl.pack(side="right", padx=(0, 16))
+        self._update_lbl.bind("<Button-1>", lambda _e: webbrowser.open(self._update_url))
+        self._bind_tooltip(
+            self._update_lbl,
+            f"SPTChecker v{version} is on the Forge.\nClick to open its page.")
 
     # ── Check logic ────────────────────────────────────────────────────
 
@@ -488,27 +820,70 @@ class SPTCheckerApp:
         self._lbl_status.configure(text="Fetching mods…")
         threading.Thread(target=self._bg_check, daemon=True).start()
 
+    def _recheck(self):
+        """Check for a setting that changes what a check fetches.
+
+        A check already running started under the old setting, and _check_now
+        ignores requests while one runs -- so without queueing, a change made
+        mid-check sat unapplied until the next scheduled check, 15 minutes of
+        the picker naming one SPT version while the columns showed another.
+        """
+        if self._checking:
+            self._recheck_pending = True
+        else:
+            self._check_now()
+
     @staticmethod
     def _strip_for_state(mods):
         return [{k: m[k] for k in DISPLAY_FIELDS if k in m} for m in mods]
 
     def _bg_check(self):
         try:
-            newest, updated = fetch_feeds()
+            self._refresh_spt_versions()
+            spt_version = self._feed_spt_version()
+            newest, updated = fetch_feeds(spt_version)
             known = self.state.get("mods", {})
             first_run = len(known) == 0
-            prev_versions = {link: m.get("version", "") for link, m in known.items()}
+            # A different SPT version from the last check -- picked, or a
+            # detected install upgraded -- is a re-baseline, not a round of
+            # news. Both columns change wholesale with the filter, and none of
+            # it is the Forge's doing: announcing it was a toast for every mod
+            # in view.
+            refiltered = self.state.get("last_check_spt_version", "") != spt_version
+            # A mod's version only means something next to one recorded under
+            # the same filter. The same mod is legitimately 1.3.0 for 4.1 and
+            # 0.9.3 for 4.0 -- compared across filters that was a downgrade
+            # arrow and an "update" toast for every mod that keeps a line per
+            # SPT release.
+            prev_versions = {link: m.get("version", "") for link, m in known.items()
+                             if m.get("spt_version", "") == spt_version}
+            recorded_elsewhere = set(known) - set(prev_versions)
 
             for mod in newest + updated:
-                known[mod["link"]] = {k: mod[k] for k in STATE_FIELDS if k in mod}
+                record = {k: mod[k] for k in STATE_FIELDS if k in mod}
+                if spt_version:
+                    record["spt_version"] = spt_version
+                known[mod["link"]] = record
             self.state["mods"] = known
             self.state["last_check"] = datetime.now().isoformat()
+            if spt_version:
+                self.state["last_check_spt_version"] = spt_version
+            else:
+                self.state.pop("last_check_spt_version", None)
 
             prev_new = self.state.get("display_new", [])
-            prev_upd = self.state.get("display_updated", [])
 
             display_new = newest[:MAX_PER_CATEGORY]
-            display_upd = updated[:MAX_PER_CATEGORY]
+            # A mod's first publication is both the newest-created and the
+            # newest-updated thing on the Forge, so it arrives in both feeds at
+            # once -- it used to take a slot in both columns and fire two
+            # toasts for the single event of a mod appearing. The new column
+            # wins: "this mod now exists" is the whole story, and the card
+            # carries its version either way. Filtered before the slice rather
+            # than after, so the updated column backfills to a full
+            # MAX_PER_CATEGORY instead of showing a hole.
+            new_links = {m["link"] for m in display_new}
+            display_upd = [m for m in updated if m["link"] not in new_links][:MAX_PER_CATEGORY]
 
             # One batched lookup covering both columns, rather than a request
             # per mod -- see unpublished_links().
@@ -529,12 +904,42 @@ class SPTCheckerApp:
 
             for mod in display_new + display_upd:
                 pil = download_thumb(mod.get("thumb_url"))
-                mod["_pil"] = pil if pil else placeholder_thumb()
+                mod["_pil"] = pil if pil else placeholder_thumb(mod.get("category"))
 
             prev_new_links = {m["link"] for m in prev_new}
-            prev_upd_links = {m["link"] for m in prev_upd}
-            notify_new = [m for m in display_new if m["link"] not in prev_new_links] if not first_run else []
-            notify_upd = [m for m in display_upd if m["link"] not in prev_upd_links] if not first_run else []
+
+            def _version_moved(mod):
+                """Whether this mod's version actually changed since we last
+                recorded it.
+
+                This is the whole test for announcing an update, replacing
+                an older rule that fired whenever a mod *entered* the updated
+                column. Entering the column is not the same event: a brand new
+                mod is held out of that column above, but once it ages out of
+                the new column it drifts into the updated one and would
+                announce itself a second time as an "update" to the version it
+                launched with. The old rule also had the opposite failure --
+                a mod already sitting in the column that genuinely updated was
+                silently skipped, because it had not just entered.
+
+                Repeats take care of themselves: every checked mod's version
+                is written to state, so an unchanged mod fails this test on
+                the very next cycle. A mod we hold no record of gets the
+                benefit of the doubt -- the updated feed says it changed and
+                we have no earlier version to contradict it. A mod recorded
+                only under a different SPT filter does not: that record is of
+                a different version line, so it can neither confirm nor rule
+                out a change, and "no record" would announce a mod that may
+                not have moved in months.
+                """
+                previous = prev_versions.get(mod["link"])
+                if previous is None:
+                    return mod["link"] not in recorded_elsewhere
+                return previous != mod.get("version", "")
+
+            quiet = first_run or refiltered
+            notify_new = [m for m in display_new if m["link"] not in prev_new_links] if not quiet else []
+            notify_upd = [m for m in display_upd if _version_moved(m)] if not quiet else []
 
             # Mark fresh mods for NEW badge
             fresh_new_links = {m["link"] for m in notify_new}
@@ -587,25 +992,30 @@ class SPTCheckerApp:
     def _apply(self, display_new, display_upd, first_run, n_fresh_new=0, n_fresh_upd=0):
         self._checking = False
         self._btn.configure(state="normal", text="Check Now")
-        self._forge_dot.configure(fg=ACCENT_NEW)
-        now = datetime.now().strftime("%H:%M:%S")
+        self._forge_dot.configure(image=self._forge_dot_ok)
+        self._lbl_status.configure(fg=TEXT_DIM)
+        now = datetime.now().strftime("%H:%M")
         total = len(self.state.get("mods", {}))
 
         self._new_sig = self._render_column(
             self._new_frame, display_new, self._new_sig, first_run,
-            "Baseline set — monitoring for new mods…", "No new mods detected yet.")
+            "Baseline set.\nWatching for new mods…", "Nothing new since the last check.")
         self._upd_sig = self._render_column(
             self._upd_frame, display_upd, self._upd_sig, first_run,
-            "Baseline set — monitoring for updates…", "No updates detected yet.")
+            "Baseline set.\nWatching for updates…", "No updates since the last check.")
+        self._new_count.configure(text=str(len(display_new)) if display_new else "")
+        self._upd_count.configure(text=str(len(display_upd)) if display_upd else "")
 
         if first_run:
-            self._lbl_status.configure(text=f"Baseline: {total} mods cataloged at {now}")
+            self._lbl_status.configure(text=f"Baseline set — {total:,} mods cataloged at {now}")
         elif n_fresh_new or n_fresh_upd:
             self._lbl_status.configure(
-                text=f"{n_fresh_new} new, {n_fresh_upd} updated at {now}  •  Tracking {total}"
+                text=f"{n_fresh_new} new, {n_fresh_upd} updated at {now}"
+                     f"   ·   tracking {total:,} mods"
             )
         else:
-            self._lbl_status.configure(text=f"No changes at {now}  •  Tracking {total} mods")
+            self._lbl_status.configure(
+                text=f"No changes at {now}   ·   tracking {total:,} mods")
 
         if not self._visible and not first_run:
             self._unread_count += n_fresh_new + n_fresh_upd
@@ -618,20 +1028,42 @@ class SPTCheckerApp:
                 self._tray.icon = self._tray_icon_normal
                 self._tray.title = "SPTChecker — no changes"
 
+        # Resolved afresh by every check: a new SPT release under "latest", or
+        # SPT upgraded in place under "auto", changes the label with the
+        # picker untouched.
+        self._update_spt_picker()
+
         self._schedule_next()
+        self._run_pending_recheck()
 
     def _on_error(self, msg, prefix="Error: "):
         self._checking = False
         self._btn.configure(state="normal", text="Check Now")
-        self._forge_dot.configure(fg="#e53935")
-        self._lbl_status.configure(text=f"{prefix}{msg}")
+        self._forge_dot.configure(image=self._forge_dot_bad)
+        # Colored to match the status dot: a failure reported in the same dim
+        # gray as a successful check is a failure nobody notices.
+        self._lbl_status.configure(text=f"{prefix}{msg}", fg=ACCENT_DANGER)
         # A failed check leaves both columns empty on a cold start, since
         # nothing has rendered yet -- fall back to the last results saved to
         # state so the window still shows the most recent known mods (stale,
         # but far better than blank) alongside the reason it couldn't refresh.
         self._show_cached_results()
-        self._next_check_ts = time.time() + 300
+        interval = self._check_interval()
+        # Retried sooner than the schedule, since a failed check leaves the
+        # columns stale -- but in proportion to it. Five minutes suits the
+        # 15-minute default; a weekly schedule retrying that often through a
+        # day-long outage would be hundreds of requests from someone who asked
+        # for one a week. With automatic checks off, nothing retries on its own.
+        self._next_check_ts = time.time() + max(5, interval // 12) * 60 if interval else None
         self._tick_timer()
+        self._run_pending_recheck()
+
+    def _run_pending_recheck(self):
+        """Start the check a mid-check setting change queued -- see _recheck.
+        Also after a failed check: the failure was under the old setting."""
+        if self._recheck_pending:
+            self._recheck_pending = False
+            self._check_now()
 
     def _show_cached_results(self):
         """Render the last successfully-fetched mods from saved state.
@@ -642,22 +1074,52 @@ class SPTCheckerApp:
         """
         if self._new_sig is not None or self._upd_sig is not None:
             return
-        cached_new = self.state.get("display_new", [])
-        cached_upd = self.state.get("display_updated", [])
+        cached = self._load_cached_results()
+        if cached:
+            self._render_cached_results(*cached)
+
+    def _bg_load_cached_results(self):
+        """_show_cached_results for a launch that isn't checking yet, with the
+        thumbnails loaded off the UI thread. With the Forge reachable a cache
+        miss really is fetched -- and after an update that bumps the thumbnail
+        cache every card misses -- so loading them on the UI thread would
+        freeze the window for as long as the fetches took."""
+        cached = self._load_cached_results()
+        if cached:
+            self.root.after(0, self._render_cached_results, *cached)
+
+    def _load_cached_results(self):
+        """The saved columns with thumbnails attached, or None if nothing is
+        saved. Works on copies and touches no widgets, so it can run on any
+        thread -- a PIL image left on a state dict would break the next save."""
+        cached_new = [dict(m) for m in self.state.get("display_new", [])]
+        cached_upd = [dict(m) for m in self.state.get("display_updated", [])]
         if not cached_new and not cached_upd:
-            return
+            return None
         for mod in cached_new + cached_upd:
             # Thumbnails come from the on-disk cache; a miss can't be fetched
             # while the site is unreachable, so it falls back to a placeholder.
             pil = download_thumb(mod.get("thumb_url"))
-            mod["_pil"] = pil if pil else placeholder_thumb()
+            mod["_pil"] = pil if pil else placeholder_thumb(mod.get("category"))
             mod["is_fresh"] = False
+        return cached_new, cached_upd
+
+    def _render_cached_results(self, cached_new, cached_upd):
+        # Checked again here: loaded in the background, a check may have
+        # rendered live results before these arrived.
+        if self._new_sig is not None or self._upd_sig is not None:
+            return
         self._new_sig = self._render_column(
             self._new_frame, cached_new, self._new_sig, False,
             "", "No new mods detected yet.")
         self._upd_sig = self._render_column(
             self._upd_frame, cached_upd, self._upd_sig, False,
             "", "No updates detected yet.")
+        # Only _apply used to set these, so saved cards shown after a failed
+        # first check -- and now at a launch that isn't due a check -- sat
+        # under headings with no counts.
+        self._new_count.configure(text=str(len(cached_new)) if cached_new else "")
+        self._upd_count.configure(text=str(len(cached_upd)) if cached_upd else "")
 
     def _render_column(self, frame, mods, prev_sig, first_run, baseline_text, empty_text):
         """Render one column, returning its new content signature. When the
@@ -685,12 +1147,14 @@ class SPTCheckerApp:
         photos = self._photos[frame] = []
         for w in frame.winfo_children():
             w.destroy()
+        endorsed = set(self.state.get("endorsed", []))
         for mod in mods:
-            photo = ImageTk.PhotoImage(mod.pop("_pil"))
+            photo = ImageTk.PhotoImage(rounded_photo(mod.pop("_pil")))
             photos.append(photo)
             accent = CATEGORY_COLORS.get(mod.get("category"), CATEGORY_COLOR_DEFAULT)
-            card = ModCard(frame, mod, accent, photo)
-            card.pack(fill="x", pady=2)
+            mod["endorsed"] = mod.get("link") in endorsed
+            card = ModCard(frame, mod, accent, photo, on_endorse=self._mark_endorsed)
+            card.pack(fill="x", pady=CARD_GAP, padx=(0, 2))
 
     @staticmethod
     def _column_signature(mods):
@@ -700,9 +1164,109 @@ class SPTCheckerApp:
 
     # ── Timer ──────────────────────────────────────────────────────────
 
-    def _schedule_next(self):
-        self._next_check_ts = time.time() + CHECK_INTERVAL_MINUTES * 60
+    # state["check_interval_minutes"] holds one of CHECK_INTERVAL_CHOICES, or 0
+    # for no automatic checks; absent means CHECK_INTERVAL_MINUTES.
+
+    def _check_interval(self):
+        """Minutes between automatic checks, or 0 when they're switched off."""
+        minutes = self.state.get("check_interval_minutes", CHECK_INTERVAL_MINUTES)
+        if minutes == 0 or minutes in CHECK_INTERVAL_CHOICES:
+            return minutes
+        # Hand-edited, or a value a later build stopped offering: never let it
+        # poll faster than the floor.
+        return CHECK_INTERVAL_MINUTES
+
+    def _last_check_ts(self):
+        try:
+            return datetime.fromisoformat(self.state["last_check"]).timestamp()
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def _start_schedule(self):
+        """This session's first check if one is due, or else the wait for it.
+
+        Launching doesn't reset the clock: with a long interval, checking on
+        every launch would turn "every 24 hours" into every reboot, and a
+        restart moments after a check would only repeat it. The columns show
+        what the last check found meanwhile. With automatic checks off, nothing
+        is fetched until Check Now.
+        """
+        interval = self._check_interval()
+        last = self._last_check_ts()
+        if interval and (last is None or time.time() >= last + interval * 60):
+            self._check_now()
+            return
+        waiting = ("Automatic checks are off.\nCheck Now looks for new mods."
+                   if not interval else "Waiting for the next check.")
+        self._set_placeholder(self._new_frame, waiting)
+        self._set_placeholder(self._upd_frame, waiting)
+        threading.Thread(target=self._bg_load_cached_results, daemon=True).start()
+        if last is not None:
+            stamp = datetime.fromtimestamp(last)
+            when = stamp.strftime("%H:%M" if stamp.date() == datetime.now().date() else "%b %d, %H:%M")
+            self._lbl_status.configure(
+                text=f"Last checked {when}   ·   tracking {len(self.state.get('mods', {})):,} mods")
+        else:
+            self._lbl_status.configure(text="Automatic checks are off")
+        self._next_check_ts = last + interval * 60 if interval else None
         self._tick_timer()
+
+    def _schedule_next(self):
+        interval = self._check_interval()
+        self._next_check_ts = time.time() + interval * 60 if interval else None
+        self._tick_timer()
+
+    @staticmethod
+    def _interval_name(minutes):
+        """15 -> "15 minutes", 60 -> "hour", 1440 -> "24 hours", 10080 -> "week"."""
+        if minutes % 10080 == 0:
+            count, unit = minutes // 10080, "week"
+        elif minutes % 60 == 0:
+            count, unit = minutes // 60, "hour"
+        else:
+            count, unit = minutes, "minute"
+        return unit if count == 1 else f"{count} {unit}s"
+
+    def _show_interval_menu(self, _e=None):
+        current = self._check_interval()
+        items = [(self._menu_label(f"Check every {self._interval_name(m)}", m == current),
+                  lambda m=m: self._set_check_interval(m)) for m in CHECK_INTERVAL_CHOICES]
+        items += [("-", None), (self._menu_label("Only when I click Check Now", current == 0),
+                                lambda: self._set_check_interval(0))]
+        lbl = self._lbl_timer
+        menu = ContextMenu(self.root, items)
+        menu.update_idletasks()
+        # Opened upward and right-aligned: the countdown sits in the window's
+        # bottom-right corner, where a menu hung below it would leave the window.
+        menu.show(lbl.winfo_rootx() + lbl.winfo_width() - menu.winfo_reqwidth(),
+                  lbl.winfo_rooty() - menu.winfo_reqheight() - 4)
+
+    def _set_check_interval(self, minutes):
+        if minutes == self._check_interval():
+            return
+        self.state["check_interval_minutes"] = minutes
+        save_state(self.state)
+        if self._checking:
+            # The running check schedules its successor from the new value when
+            # it lands (_apply -> _schedule_next).
+            return
+        # Measured from the last check, not from now: shortening the interval
+        # past the time already waited checks straight away.
+        last = self._last_check_ts()
+        self._next_check_ts = (last or 0) + minutes * 60 if minutes else None
+        self._tick_timer()
+
+    @staticmethod
+    def _countdown(seconds):
+        """The countdown: "14:59" under an hour, then "in 3h 59m", "in 6d 23h"."""
+        if seconds < 3600:
+            m, s = divmod(seconds, 60)
+            return f"{m:02d}:{s:02d}"
+        hours, rest = divmod(seconds, 3600)
+        if hours < 24:
+            return f"in {hours}h {rest // 60:02d}m"
+        days, hours = divmod(hours, 24)
+        return f"in {days}d {hours}h"
 
     def _tick_timer(self):
         # _do_show calls this directly (in addition to whatever chain is
@@ -714,17 +1278,20 @@ class SPTCheckerApp:
             self._timer_after_id = None
 
         if self._next_check_ts is None:
+            self._lbl_timer.configure(text="Automatic checks off  ▾")
             return
         left = max(0, int(self._next_check_ts - time.time()))
         if left <= 0:
             self._check_now()
             return
         if self._visible:
-            m, s = divmod(left, 60)
-            self._lbl_timer.configure(text=f"Next check in {m:02d}:{s:02d}")
+            self._lbl_timer.configure(text=f"Next check {self._countdown(left)}  ▾")
             self._timer_after_id = self.root.after(1000, self._tick_timer)
         else:
-            self._timer_after_id = self.root.after(left * 1000, self._tick_timer)
+            # Woken at least hourly while hidden, so a days-long wait is
+            # re-measured against the clock rather than left to one timer
+            # across sleep and resume.
+            self._timer_after_id = self.root.after(min(left, 3600) * 1000, self._tick_timer)
 
     # ── Run ────────────────────────────────────────────────────────────
 
