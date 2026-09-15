@@ -55,6 +55,12 @@ Each of these cost real debugging time. They are not hypothetical.
 - **`tk.Canvas` requests a default 378px width.** In a narrower container it
   consumes the whole cavity, and anything packed after it (a scrollbar) is
   allocated nothing. Pass `width=1` and pack the scrollbar with `before=`.
+- **Tk centres canvas text by its line box, not its capitals.** The line box
+  keeps room for descenders, so centred labels sat 0.5px to 3px low depending
+  on display scaling and on which way Tk rounded. `theme.cap_centred_top`
+  places the baseline from `theme.CAP_HEIGHT_EM` instead; `PillButton` and
+  `ToggleSwitch` use it (measured within half a pixel, 100% to 300%). Other
+  text drawn centred on a canvas still centres the old way.
 - **Buttons must require a press before acting on a release.** Destroying a
   window on mouse-down drops the pointer grab and the OS delivers the release
   to whatever was underneath. See `theme.PillButton._on_press`.
@@ -74,7 +80,9 @@ Each of these cost real debugging time. They are not hypothetical.
   maintainer has turned on bot countermeasures before. Never bypass
   `_forge_request`.
 - **15 minutes is the poll floor**, matching the shortest cache window
-  sp-mod.com serves. Checking faster spends requests on unchanged bytes.
+  sp-mod.com serves. Checking faster spends requests on unchanged bytes. The
+  status bar's schedule menu (`config.CHECK_INTERVAL_CHOICES`) only offers
+  intervals at or above it.
 - `published_at` (API) is the true publish time; RSS `pubDate` is when the
   listing was *created*, often a day earlier. The stats chart counts new
   publications only, never updates.
@@ -84,6 +92,21 @@ Each of these cost real debugging time. They are not hypothetical.
   the new column out of the updated one; without that it filled a slot in
   both and fired two toasts for one event. Roughly 12 of each 50-mod window
   overlap, so this is the common case, not an edge one.
+- **`filter[spt_version]` filters mods, never their versions.** The page holds
+  only mods with *a* compatible version, but `include=versions` still lists
+  all of them (newest first by version number, not date; capped near 10 per
+  mod, though the docs say 6). `_parse_api_mod` picks the one to show with
+  `utils.spt_version_satisfies`, and a mod with its own line per SPT release is
+  the common case -- 79 of 100 compatible mods sampled showed an older version
+  than their newest.
+- **Constraints are Composer semver, typed loosely.** `~4.0` means `<5.0.0`
+  (not npm's `<4.1.0`), and live listings carry `~4.`, `~4.1. > 4.1.1`,
+  `4.0.x` and `3.7.1 - 4.1.3`, all of which the Forge accepts. The ground truth
+  is the server itself: `GET /api/v0/spt/versions?filter[spt_version]=<c>`
+  returns the releases `<c>` allows. The evaluator matched it on every
+  constraint across 183 live listings -- re-run that comparison before changing
+  it. RSS carries no constraints at all, so `fetch_feeds` skips RSS while
+  filtering.
 
 ## Toast activation
 
@@ -158,6 +181,9 @@ Then `python -m PyInstaller --noconfirm SPTModChecker_v<VER>.spec`.
 - **Smoke-test the exe before shipping.** Launch it with `--background`, confirm
   it survives ~15s and wrote a fresh `last_check` to the state file. A frozen
   build can fail at runtime on a missing import even when the build succeeded.
+  A launch within the check interval of the last check doesn't check at all,
+  so smoke-test against a fresh data dir (point `LOCALAPPDATA` at an empty
+  folder) or a `last_check` older than the interval.
   Kill the whole process tree — the PyInstaller bootloader spawns a child that
   outlives a plain kill of the parent.
 - `dist/` and `build/` are gitignored; releases go to the Forge and GitHub.
@@ -187,6 +213,27 @@ Then `python -m PyInstaller --noconfirm SPTModChecker_v<VER>.spec`.
   it entering the updated column. The old rule missed a genuine update to a
   mod already sitting in the column, and announced unchanged mods that
   drifted back into it.
+- **SPT version filter** (header picker, unreleased). State keys:
+  `spt_version_filter` -- `"latest"`, `"4.0.x"` (newest of that line), a
+  release, `"auto"` (the Local Mods install) or `"all"`; absent means
+  `config.DEFAULT_SPT_VERSION_FILTER`, which is `"latest"`. `spt_versions`
+  is the release list those resolve against, refreshed by the first check
+  each day on the check thread -- not a timer, because the default can't
+  resolve without it. `last_check_spt_version` is the resolved release the
+  last check used, so a new release moving "latest" re-baselines like any
+  other filter change. Mod records taken under a filter carry `spt_version`.
+  `_bg_check` stays quiet on the check after the filter changes, and never
+  compares a version against one recorded under a different filter -- the
+  same mod is legitimately 1.3.0 for one SPT and 0.9.3 for another, and
+  comparing them was a toast and a downgrade arrow for every such mod.
+- **Check schedule** (status bar countdown, unreleased). State key
+  `check_interval_minutes`: one of `config.CHECK_INTERVAL_CHOICES`, or 0 for
+  off; anything else falls back to 15. A launch no longer always checks:
+  `_start_schedule` checks only if `last_check` is older than the interval,
+  otherwise it shows the saved columns (thumbnails loaded on a thread, since
+  a cache miss would be fetched on the UI thread) and resumes the countdown.
+  A failed check retries after `max(5, interval // 12)` minutes, and never
+  when checks are off.
 
 ### Open items
 

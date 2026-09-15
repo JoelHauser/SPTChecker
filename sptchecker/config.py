@@ -31,6 +31,10 @@ FORGE_MOD_PAGE = "https://sp-mod.com/mod/2921/sptchecker"
 # riding the 15-minute mod poll would spend hundreds of requests a day to learn
 # nothing -- against a host that meters us and asked us to ease off.
 UPDATE_CHECK_INTERVAL_HOURS = 6
+# The SPT version picker's list of releases. SPT itself releases even less
+# often than this app, so a daily refresh is already generous -- fetched by
+# the first check after that long, never by every check.
+SPT_VERSIONS_REFRESH_HOURS = 24
 
 # ── Feed ───────────────────────────────────────────────────────────────
 
@@ -39,6 +43,7 @@ FEED_UPDATED_URL = "https://sp-mod.com/mods/rss?sort=updated"
 API_URL = "https://sp-mod.com/api/v0/mods"
 API_MOD_URL = "https://sp-mod.com/api/v0/mod"
 API_MODS_UPDATES_URL = "https://sp-mod.com/api/v0/mods/updates"
+API_SPT_VERSIONS_URL = "https://sp-mod.com/api/v0/spt/versions"
 FORGE_URL = "https://sp-mod.com/mods"
 FORGE_USER_URL = "https://sp-mod.com/user"
 DC_NS = "http://purl.org/dc/elements/1.1/"
@@ -66,6 +71,13 @@ MIGRATED_URL_FIELDS = ("link", "thumb_url")
 # Polling every 5 minutes made two of every three checks pure waste, against a
 # host that had already turned on bot countermeasures once.
 CHECK_INTERVAL_MINUTES = 15
+# What the status bar's schedule menu offers, in minutes. Nothing shorter than
+# CHECK_INTERVAL_MINUTES: that is the floor, not just the default.
+CHECK_INTERVAL_CHOICES = (15, 60, 240, 720, 1440, 10080)
+# The SPT release the feed is filtered for until someone picks one: the
+# newest release, followed as new ones come out. "all" is the unfiltered feed;
+# app._feed_spt_version lists the other choices.
+DEFAULT_SPT_VERSION_FILTER = "latest"
 MAX_PER_CATEGORY = 7
 THUMB_SIZE = (52, 52)
 STATE_FIELDS = (

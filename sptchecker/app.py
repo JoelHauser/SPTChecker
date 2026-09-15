@@ -11,14 +11,14 @@ from PIL import Image, ImageTk
 from .config import (
     ACCENT_DANGER, ACCENT_NEW, ACCENT_UPD, APP_VERSION, BG, BORDER, CARD_BG,
     CATEGORY_COLOR_DEFAULT, CATEGORY_COLORS,
-    CHECK_INTERVAL_MINUTES,
+    CHECK_INTERVAL_CHOICES, CHECK_INTERVAL_MINUTES, DEFAULT_SPT_VERSION_FILTER,
     DISPLAY_FIELDS, FORGE_MOD_PAGE, FORGE_URL, LAYOUT_VERSION, MAX_PER_CATEGORY,
-    SEPARATOR, STATE_FIELDS, STATUS_BG, TEXT, TEXT_BRIGHT, TEXT_DIM, TEXT_FAINT,
-    UPDATE_CHECK_INTERVAL_HOURS,
+    SEPARATOR, SPT_VERSIONS_REFRESH_HOURS, STATE_FIELDS, STATUS_BG, TEXT,
+    TEXT_BRIGHT, TEXT_DIM, TEXT_FAINT, UPDATE_CHECK_INTERVAL_HOURS,
     WINDOW_DEFAULT_GEOMETRY, WINDOW_DEFAULT_WIDTH, WINDOW_MIN_HEIGHT,
     WINDOW_MIN_WIDTH,
 )
-from .feed import ForgeBlocked, fetch_feeds, unpublished_links
+from .feed import ForgeBlocked, fetch_feeds, fetch_spt_versions, unpublished_links
 from .localmods import detect_spt_version, scan_installed_mods
 from .matcher import match_local_mods
 from .platform import (
@@ -34,8 +34,8 @@ from .theme import (
 )
 from .update import check_for_update
 from .widgets import (
-    CARD_GAP, LocalScanSettingsWindow, ModCard, StatsWindow, build_scroll_area,
-    card_pitch,
+    CARD_GAP, ContextMenu, LocalScanSettingsWindow, ModCard, StatsWindow,
+    build_scroll_area, card_pitch,
 )
 
 # Layout constants shared between the widgets that use them and _size_to_fit,
@@ -68,6 +68,10 @@ class SPTCheckerApp:
 
         self._photos = {}  # frame -> PhotoImage refs for its current cards
         self._checking = False
+        self._recheck_pending = False
+        # When the SPT release list was last fetched (time.monotonic); never, at
+        # launch, so the first check refreshes it -- see _refresh_spt_versions.
+        self._spt_versions_at = float("-inf")
         self._scanning = False
         self._local_scan_window = None
         self._next_check_ts = None
@@ -98,7 +102,7 @@ class SPTCheckerApp:
 
         self.root.protocol("WM_DELETE_WINDOW", self._hide_to_tray)
 
-        self.root.after(400, self._check_now)
+        self.root.after(400, self._start_schedule)
         # Local mod scanning never runs on its own, even with the feature
         # enabled and a folder already set -- only an explicit click on
         # Scan Now (in _show_local_scan) starts one.
@@ -209,6 +213,13 @@ class SPTCheckerApp:
         self._tooltip_win = None
         self._bind_tooltip(self._btn, "Check the Forge for new or updated mods")
 
+        # Beside Check Now rather than among the popups: it decides what every
+        # check fetches, and its label is the only sign on screen that the
+        # columns are being filtered at all.
+        self._spt_btn = flat_button(hdr, self._spt_picker_text(), self._show_spt_menu,
+                                    bg=STATUS_BG)
+        self._spt_btn.pack(side="right", padx=(0, 8))
+
         flat_button(hdr, "Local Mods", self._show_local_scan,
                     bg=STATUS_BG).pack(side="right", padx=(0, 8))
         flat_button(hdr, "Stats", self._show_stats,
@@ -296,8 +307,13 @@ class SPTCheckerApp:
         self._lbl_status.pack(side="left")
 
         self._lbl_timer = tk.Label(inner, text="", font=font(8),
-                                   fg=TEXT_FAINT, bg=STATUS_BG)
+                                   fg=TEXT_FAINT, bg=STATUS_BG, cursor="hand2")
         self._lbl_timer.pack(side="right")
+        # The schedule is changed from the countdown that shows it, rather than
+        # from yet another control in a header already measured to its limit.
+        self._lbl_timer.bind("<Button-1>", self._show_interval_menu)
+        self._lbl_timer.bind("<Enter>", lambda _e: self._lbl_timer.configure(fg=TEXT))
+        self._lbl_timer.bind("<Leave>", lambda _e: self._lbl_timer.configure(fg=TEXT_FAINT))
 
         # Left unbuilt -- the update chip only appears once a newer release is
         # actually found, so the bar stays quiet for anyone already current.
@@ -403,6 +419,172 @@ class SPTCheckerApp:
         stats = compute_stats(self.state.get("mods", {}))
         StatsWindow(self.root, stats)
 
+    # ── SPT version filter ─────────────────────────────────────────────
+
+    # state["spt_version_filter"] holds the choice, and absent means
+    # DEFAULT_SPT_VERSION_FILTER: "latest" (the newest SPT release), "4.0.x"
+    # (the newest release in that line), "4.0.13" (exactly that release),
+    # "auto" (whatever the Local Mods install runs), or "all". Choices that
+    # float are resolved again on every check, so a new SPT release moves the
+    # filter along without the picker being touched.
+
+    def _spt_choice(self):
+        return self.state.get("spt_version_filter", DEFAULT_SPT_VERSION_FILTER)
+
+    def _feed_spt_version(self):
+        """The SPT release the feed is filtered to right now, or "" for none.
+
+        A choice that can't be resolved -- "auto" with no install to read, or
+        "latest" before the release list has ever loaded -- leaves the feed
+        unfiltered rather than empty: the picker says which, and a blank
+        column would only look broken.
+        """
+        choice = self._spt_choice()
+        if choice == "all":
+            return ""
+        if choice == "auto":
+            path = self.state.get("spt_install_path", "")
+            return (detect_spt_version(path) if path else None) or ""
+        releases = self.state.get("spt_versions", [])
+        if choice == "latest":
+            return releases[0] if releases else ""
+        if choice.endswith(".x"):
+            return next((r for r in releases if r.rsplit(".", 1)[0] == choice[:-2]), "")
+        return choice
+
+    def _spt_picker_text(self):
+        # Kept short: the header's minimum width is measured from its controls,
+        # and a label much longer than "SPT: 4.0.13" pushes it past the 720px
+        # default at 100% scaling for every user. So the label names the
+        # release being filtered for, and the menu says how it was chosen.
+        choice = self._spt_choice()
+        version = self._feed_spt_version()
+        if choice == "auto":
+            text = f"{version or 'All'} (auto)"
+        elif choice == "all":
+            text = "All"
+        else:
+            # A floating choice that hasn't resolved yet names itself instead.
+            text = version or choice
+        return f"SPT: {text}  ▾"
+
+    def _update_spt_picker(self):
+        self._spt_btn.configure(text=self._spt_picker_text())
+        # The button is sized by its label, so a longer one widens the header
+        # past the minimum measured at startup -- re-measure, or the controls
+        # can collide in a window dragged down to the old minimum.
+        self.root.minsize(self._min_width(), WINDOW_MIN_HEIGHT)
+
+    def _spt_release_lines(self):
+        """The cached SPT releases grouped by minor line, newest first:
+        [("4.1", ["4.1.5", ...]), ("4.0", ["4.0.13", ...]), ...]."""
+        lines = {}
+        for release in self.state.get("spt_versions", []):
+            lines.setdefault(release.rsplit(".", 1)[0], []).append(release)
+        return list(lines.items())
+
+    def _show_spt_menu(self):
+        """The picker's menu: the latest release, auto-detect and every version,
+        then one entry per minor line that opens that line's releases.
+
+        Two levels because a flat list is 50 releases long -- taller than the
+        screen -- and a line's exact releases can't be dropped in favour of its
+        latest: constraints are decided per patch ("~4.0.12" covers 4.0.12 and
+        4.0.13 but not 4.0.11), so someone held on an older patch needs it.
+        """
+        choice = self._spt_choice()
+        releases = self.state.get("spt_versions", [])
+        path = self.state.get("spt_install_path", "")
+        detected = detect_spt_version(path) if path else None
+        if detected:
+            auto = f"Match my install ({detected})"
+        elif path:
+            auto = "Match my install (SPT not found)"
+        else:
+            auto = "Match my install (set its folder in Local Mods)"
+        latest = f"Latest release ({releases[0]})" if releases else "Latest release"
+        items = [
+            (self._menu_label(latest, choice == "latest"), lambda: self._set_spt_filter("latest")),
+            (self._menu_label(auto, choice == "auto"), lambda: self._set_spt_filter("auto")),
+            (self._menu_label("All SPT versions", choice == "all"),
+             lambda: self._set_spt_filter("all")),
+        ]
+        lines = self._spt_release_lines()
+        if lines:
+            items.append(("-", None))
+            for line, line_releases in lines:
+                selected = choice == f"{line}.x" or choice in line_releases
+                items.append((self._menu_label(f"SPT {line}  ›", selected),
+                              lambda line=line: self._show_spt_line_menu(line)))
+        self._show_spt_popup(items)
+
+    def _show_spt_line_menu(self, line):
+        """One line's releases, led by the choice that follows its newest.
+
+        Written "Latest 4.0.x": x is how SPT release lines are commonly written,
+        and "Latest" is what separates this from matching any 4.0 patch -- it
+        filters for the newest one alone, moving when a new patch lands.
+        """
+        choice = self._spt_choice()
+        releases = dict(self._spt_release_lines()).get(line, [])
+        if not releases:
+            return
+        items = [(self._menu_label(f"Latest {line}.x ({releases[0]})", choice == f"{line}.x"),
+                  lambda: self._set_spt_filter(f"{line}.x")), ("-", None)]
+        items += [(self._menu_label(r, r == choice), lambda r=r: self._set_spt_filter(r))
+                  for r in releases]
+        self._show_spt_popup(items)
+
+    @staticmethod
+    def _menu_label(text, selected):
+        # Marked after the text, not before it: the menu font is proportional,
+        # so a leading mark would knock the selected row out of line.
+        return f"{text}  ✓" if selected else text
+
+    def _show_spt_popup(self, items):
+        btn = self._spt_btn
+        menu = ContextMenu(self.root, items)
+        menu.update_idletasks()
+        # Right-aligned under the picker, which sits against the header's right
+        # edge -- hung from its left corner, a wide menu ran past the window.
+        menu.show(btn.winfo_rootx() + btn.winfo_width() - menu.winfo_reqwidth(),
+                  btn.winfo_rooty() + btn.winfo_height() + 4)
+
+    def _set_spt_filter(self, choice):
+        if choice == self._spt_choice():
+            return
+        before = self._feed_spt_version()
+        self.state["spt_version_filter"] = choice
+        save_state(self.state)
+        self._update_spt_picker()
+        # Two choices can name the same release -- "latest" and "4.1.x" are
+        # both 4.1.5 today -- and moving between them changes nothing a check
+        # would fetch.
+        if self._feed_spt_version() != before:
+            self._recheck()
+
+    def _refresh_spt_versions(self):
+        """Refresh the cached SPT release list, at most once a day. Runs on the
+        check thread, before the check resolves its filter.
+
+        Part of the check rather than on a timer of its own because "latest",
+        the default, can't be resolved without the list: a timer that fired
+        after startup would leave a first launch's first check unfiltered until
+        the next one. Still no more than daily -- SPT releases are rare, and
+        asking on every check would be dozens of requests a day to learn
+        nothing.
+        """
+        fresh = (time.monotonic() - self._spt_versions_at
+                 < SPT_VERSIONS_REFRESH_HOURS * 3600)
+        if fresh and self.state.get("spt_versions"):
+            return
+        # None on failure: the list already saved stays, and the next check
+        # tries again.
+        releases = fetch_spt_versions()
+        if releases:
+            self.state["spt_versions"] = releases
+            self._spt_versions_at = time.monotonic()
+
     # ── Local mod scan (opt-in) ───────────────────────────────────────
 
     def _show_local_scan(self):
@@ -448,6 +630,11 @@ class SPTCheckerApp:
     def _set_local_scan_path(self, path):
         self.state["spt_install_path"] = path
         save_state(self.state)
+        if self._spt_choice() == "auto":
+            # The feed takes its SPT version from this folder, so a different
+            # folder can mean a different release to filter for.
+            self._update_spt_picker()
+            self._recheck()
 
     def _scan_local_now(self):
         if self._scanning:
@@ -633,21 +820,56 @@ class SPTCheckerApp:
         self._lbl_status.configure(text="Fetching mods…")
         threading.Thread(target=self._bg_check, daemon=True).start()
 
+    def _recheck(self):
+        """Check for a setting that changes what a check fetches.
+
+        A check already running started under the old setting, and _check_now
+        ignores requests while one runs -- so without queueing, a change made
+        mid-check sat unapplied until the next scheduled check, 15 minutes of
+        the picker naming one SPT version while the columns showed another.
+        """
+        if self._checking:
+            self._recheck_pending = True
+        else:
+            self._check_now()
+
     @staticmethod
     def _strip_for_state(mods):
         return [{k: m[k] for k in DISPLAY_FIELDS if k in m} for m in mods]
 
     def _bg_check(self):
         try:
-            newest, updated = fetch_feeds()
+            self._refresh_spt_versions()
+            spt_version = self._feed_spt_version()
+            newest, updated = fetch_feeds(spt_version)
             known = self.state.get("mods", {})
             first_run = len(known) == 0
-            prev_versions = {link: m.get("version", "") for link, m in known.items()}
+            # A different SPT version from the last check -- picked, or a
+            # detected install upgraded -- is a re-baseline, not a round of
+            # news. Both columns change wholesale with the filter, and none of
+            # it is the Forge's doing: announcing it was a toast for every mod
+            # in view.
+            refiltered = self.state.get("last_check_spt_version", "") != spt_version
+            # A mod's version only means something next to one recorded under
+            # the same filter. The same mod is legitimately 1.3.0 for 4.1 and
+            # 0.9.3 for 4.0 -- compared across filters that was a downgrade
+            # arrow and an "update" toast for every mod that keeps a line per
+            # SPT release.
+            prev_versions = {link: m.get("version", "") for link, m in known.items()
+                             if m.get("spt_version", "") == spt_version}
+            recorded_elsewhere = set(known) - set(prev_versions)
 
             for mod in newest + updated:
-                known[mod["link"]] = {k: mod[k] for k in STATE_FIELDS if k in mod}
+                record = {k: mod[k] for k in STATE_FIELDS if k in mod}
+                if spt_version:
+                    record["spt_version"] = spt_version
+                known[mod["link"]] = record
             self.state["mods"] = known
             self.state["last_check"] = datetime.now().isoformat()
+            if spt_version:
+                self.state["last_check_spt_version"] = spt_version
+            else:
+                self.state.pop("last_check_spt_version", None)
 
             prev_new = self.state.get("display_new", [])
 
@@ -704,13 +926,20 @@ class SPTCheckerApp:
                 is written to state, so an unchanged mod fails this test on
                 the very next cycle. A mod we hold no record of gets the
                 benefit of the doubt -- the updated feed says it changed and
-                we have no earlier version to contradict it.
+                we have no earlier version to contradict it. A mod recorded
+                only under a different SPT filter does not: that record is of
+                a different version line, so it can neither confirm nor rule
+                out a change, and "no record" would announce a mod that may
+                not have moved in months.
                 """
                 previous = prev_versions.get(mod["link"])
-                return previous is None or previous != mod.get("version", "")
+                if previous is None:
+                    return mod["link"] not in recorded_elsewhere
+                return previous != mod.get("version", "")
 
-            notify_new = [m for m in display_new if m["link"] not in prev_new_links] if not first_run else []
-            notify_upd = [m for m in display_upd if _version_moved(m)] if not first_run else []
+            quiet = first_run or refiltered
+            notify_new = [m for m in display_new if m["link"] not in prev_new_links] if not quiet else []
+            notify_upd = [m for m in display_upd if _version_moved(m)] if not quiet else []
 
             # Mark fresh mods for NEW badge
             fresh_new_links = {m["link"] for m in notify_new}
@@ -799,7 +1028,13 @@ class SPTCheckerApp:
                 self._tray.icon = self._tray_icon_normal
                 self._tray.title = "SPTChecker — no changes"
 
+        # Resolved afresh by every check: a new SPT release under "latest", or
+        # SPT upgraded in place under "auto", changes the label with the
+        # picker untouched.
+        self._update_spt_picker()
+
         self._schedule_next()
+        self._run_pending_recheck()
 
     def _on_error(self, msg, prefix="Error: "):
         self._checking = False
@@ -813,8 +1048,22 @@ class SPTCheckerApp:
         # state so the window still shows the most recent known mods (stale,
         # but far better than blank) alongside the reason it couldn't refresh.
         self._show_cached_results()
-        self._next_check_ts = time.time() + 300
+        interval = self._check_interval()
+        # Retried sooner than the schedule, since a failed check leaves the
+        # columns stale -- but in proportion to it. Five minutes suits the
+        # 15-minute default; a weekly schedule retrying that often through a
+        # day-long outage would be hundreds of requests from someone who asked
+        # for one a week. With automatic checks off, nothing retries on its own.
+        self._next_check_ts = time.time() + max(5, interval // 12) * 60 if interval else None
         self._tick_timer()
+        self._run_pending_recheck()
+
+    def _run_pending_recheck(self):
+        """Start the check a mid-check setting change queued -- see _recheck.
+        Also after a failed check: the failure was under the old setting."""
+        if self._recheck_pending:
+            self._recheck_pending = False
+            self._check_now()
 
     def _show_cached_results(self):
         """Render the last successfully-fetched mods from saved state.
@@ -825,22 +1074,52 @@ class SPTCheckerApp:
         """
         if self._new_sig is not None or self._upd_sig is not None:
             return
-        cached_new = self.state.get("display_new", [])
-        cached_upd = self.state.get("display_updated", [])
+        cached = self._load_cached_results()
+        if cached:
+            self._render_cached_results(*cached)
+
+    def _bg_load_cached_results(self):
+        """_show_cached_results for a launch that isn't checking yet, with the
+        thumbnails loaded off the UI thread. With the Forge reachable a cache
+        miss really is fetched -- and after an update that bumps the thumbnail
+        cache every card misses -- so loading them on the UI thread would
+        freeze the window for as long as the fetches took."""
+        cached = self._load_cached_results()
+        if cached:
+            self.root.after(0, self._render_cached_results, *cached)
+
+    def _load_cached_results(self):
+        """The saved columns with thumbnails attached, or None if nothing is
+        saved. Works on copies and touches no widgets, so it can run on any
+        thread -- a PIL image left on a state dict would break the next save."""
+        cached_new = [dict(m) for m in self.state.get("display_new", [])]
+        cached_upd = [dict(m) for m in self.state.get("display_updated", [])]
         if not cached_new and not cached_upd:
-            return
+            return None
         for mod in cached_new + cached_upd:
             # Thumbnails come from the on-disk cache; a miss can't be fetched
             # while the site is unreachable, so it falls back to a placeholder.
             pil = download_thumb(mod.get("thumb_url"))
             mod["_pil"] = pil if pil else placeholder_thumb(mod.get("category"))
             mod["is_fresh"] = False
+        return cached_new, cached_upd
+
+    def _render_cached_results(self, cached_new, cached_upd):
+        # Checked again here: loaded in the background, a check may have
+        # rendered live results before these arrived.
+        if self._new_sig is not None or self._upd_sig is not None:
+            return
         self._new_sig = self._render_column(
             self._new_frame, cached_new, self._new_sig, False,
             "", "No new mods detected yet.")
         self._upd_sig = self._render_column(
             self._upd_frame, cached_upd, self._upd_sig, False,
             "", "No updates detected yet.")
+        # Only _apply used to set these, so saved cards shown after a failed
+        # first check -- and now at a launch that isn't due a check -- sat
+        # under headings with no counts.
+        self._new_count.configure(text=str(len(cached_new)) if cached_new else "")
+        self._upd_count.configure(text=str(len(cached_upd)) if cached_upd else "")
 
     def _render_column(self, frame, mods, prev_sig, first_run, baseline_text, empty_text):
         """Render one column, returning its new content signature. When the
@@ -885,9 +1164,109 @@ class SPTCheckerApp:
 
     # ── Timer ──────────────────────────────────────────────────────────
 
-    def _schedule_next(self):
-        self._next_check_ts = time.time() + CHECK_INTERVAL_MINUTES * 60
+    # state["check_interval_minutes"] holds one of CHECK_INTERVAL_CHOICES, or 0
+    # for no automatic checks; absent means CHECK_INTERVAL_MINUTES.
+
+    def _check_interval(self):
+        """Minutes between automatic checks, or 0 when they're switched off."""
+        minutes = self.state.get("check_interval_minutes", CHECK_INTERVAL_MINUTES)
+        if minutes == 0 or minutes in CHECK_INTERVAL_CHOICES:
+            return minutes
+        # Hand-edited, or a value a later build stopped offering: never let it
+        # poll faster than the floor.
+        return CHECK_INTERVAL_MINUTES
+
+    def _last_check_ts(self):
+        try:
+            return datetime.fromisoformat(self.state["last_check"]).timestamp()
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def _start_schedule(self):
+        """This session's first check if one is due, or else the wait for it.
+
+        Launching doesn't reset the clock: with a long interval, checking on
+        every launch would turn "every 24 hours" into every reboot, and a
+        restart moments after a check would only repeat it. The columns show
+        what the last check found meanwhile. With automatic checks off, nothing
+        is fetched until Check Now.
+        """
+        interval = self._check_interval()
+        last = self._last_check_ts()
+        if interval and (last is None or time.time() >= last + interval * 60):
+            self._check_now()
+            return
+        waiting = ("Automatic checks are off.\nCheck Now looks for new mods."
+                   if not interval else "Waiting for the next check.")
+        self._set_placeholder(self._new_frame, waiting)
+        self._set_placeholder(self._upd_frame, waiting)
+        threading.Thread(target=self._bg_load_cached_results, daemon=True).start()
+        if last is not None:
+            stamp = datetime.fromtimestamp(last)
+            when = stamp.strftime("%H:%M" if stamp.date() == datetime.now().date() else "%b %d, %H:%M")
+            self._lbl_status.configure(
+                text=f"Last checked {when}   ·   tracking {len(self.state.get('mods', {})):,} mods")
+        else:
+            self._lbl_status.configure(text="Automatic checks are off")
+        self._next_check_ts = last + interval * 60 if interval else None
         self._tick_timer()
+
+    def _schedule_next(self):
+        interval = self._check_interval()
+        self._next_check_ts = time.time() + interval * 60 if interval else None
+        self._tick_timer()
+
+    @staticmethod
+    def _interval_name(minutes):
+        """15 -> "15 minutes", 60 -> "hour", 1440 -> "24 hours", 10080 -> "week"."""
+        if minutes % 10080 == 0:
+            count, unit = minutes // 10080, "week"
+        elif minutes % 60 == 0:
+            count, unit = minutes // 60, "hour"
+        else:
+            count, unit = minutes, "minute"
+        return unit if count == 1 else f"{count} {unit}s"
+
+    def _show_interval_menu(self, _e=None):
+        current = self._check_interval()
+        items = [(self._menu_label(f"Check every {self._interval_name(m)}", m == current),
+                  lambda m=m: self._set_check_interval(m)) for m in CHECK_INTERVAL_CHOICES]
+        items += [("-", None), (self._menu_label("Only when I click Check Now", current == 0),
+                                lambda: self._set_check_interval(0))]
+        lbl = self._lbl_timer
+        menu = ContextMenu(self.root, items)
+        menu.update_idletasks()
+        # Opened upward and right-aligned: the countdown sits in the window's
+        # bottom-right corner, where a menu hung below it would leave the window.
+        menu.show(lbl.winfo_rootx() + lbl.winfo_width() - menu.winfo_reqwidth(),
+                  lbl.winfo_rooty() - menu.winfo_reqheight() - 4)
+
+    def _set_check_interval(self, minutes):
+        if minutes == self._check_interval():
+            return
+        self.state["check_interval_minutes"] = minutes
+        save_state(self.state)
+        if self._checking:
+            # The running check schedules its successor from the new value when
+            # it lands (_apply -> _schedule_next).
+            return
+        # Measured from the last check, not from now: shortening the interval
+        # past the time already waited checks straight away.
+        last = self._last_check_ts()
+        self._next_check_ts = (last or 0) + minutes * 60 if minutes else None
+        self._tick_timer()
+
+    @staticmethod
+    def _countdown(seconds):
+        """The countdown: "14:59" under an hour, then "in 3h 59m", "in 6d 23h"."""
+        if seconds < 3600:
+            m, s = divmod(seconds, 60)
+            return f"{m:02d}:{s:02d}"
+        hours, rest = divmod(seconds, 3600)
+        if hours < 24:
+            return f"in {hours}h {rest // 60:02d}m"
+        days, hours = divmod(hours, 24)
+        return f"in {days}d {hours}h"
 
     def _tick_timer(self):
         # _do_show calls this directly (in addition to whatever chain is
@@ -899,17 +1278,20 @@ class SPTCheckerApp:
             self._timer_after_id = None
 
         if self._next_check_ts is None:
+            self._lbl_timer.configure(text="Automatic checks off  ▾")
             return
         left = max(0, int(self._next_check_ts - time.time()))
         if left <= 0:
             self._check_now()
             return
         if self._visible:
-            m, s = divmod(left, 60)
-            self._lbl_timer.configure(text=f"Next check {m:02d}:{s:02d}")
+            self._lbl_timer.configure(text=f"Next check {self._countdown(left)}  ▾")
             self._timer_after_id = self.root.after(1000, self._tick_timer)
         else:
-            self._timer_after_id = self.root.after(left * 1000, self._tick_timer)
+            # Woken at least hourly while hidden, so a days-long wait is
+            # re-measured against the clock rather than left to one timer
+            # across sleep and resume.
+            self._timer_after_id = self.root.after(min(left, 3600) * 1000, self._tick_timer)
 
     # ── Run ────────────────────────────────────────────────────────────
 

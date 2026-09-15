@@ -24,6 +24,10 @@ from .config import (
 SS = 4  # supersample factor for every rendered primitive
 
 FONT_FAMILY = "Segoe UI"
+# FONT_FAMILY's capital height per em: sCapHeight 1434 over 2048 units per em,
+# read from segoeui.ttf's OS/2 table. Change it with the family -- PillButton
+# centres its label on it.
+CAP_HEIGHT_EM = 1434 / 2048
 
 _fonts = {}
 _images = {}
@@ -38,6 +42,26 @@ def font(size=9, weight="normal", slant="roman", family=FONT_FAMILY):
     if key not in _fonts:
         _fonts[key] = tkfont.Font(family=family, size=size, weight=weight, slant=slant)
     return _fonts[key]
+
+
+def cap_centred_top(widget, fnt, centre_y):
+    """The y to give canvas text with a north anchor so its capitals, rather
+    than its line box, are centred on centre_y.
+
+    Tk centres text by its line box, which keeps room below the baseline for
+    descenders -- so centred labels sat low by 0.5px to 3px depending on
+    display scaling and on whether Tk had an odd pixel to round. Placing the
+    baseline from the cap height, and rounding once here rather than in Tk's
+    own centring, measured within half a pixel on every button style at 100%
+    to 300%, and on the toggle switch's label against its track.
+    """
+    size = fnt.actual("size")
+    em_px = -size if size < 0 else size * float(widget.tk.call("tk", "scaling"))
+    baseline = centre_y + em_px * CAP_HEIGHT_EM / 2
+    # The quarter pixel is measured, not derived: it splits the rounding
+    # across scalings, where the exact centre left the 8pt button 1px high
+    # at 225%.
+    return round(baseline - fnt.metrics("ascent") + 0.25)
 
 
 def ellipsize(fnt, text, max_px):
@@ -301,6 +325,7 @@ class PillButton(tk.Canvas):
     def _resize(self):
         self._box_w = self._font.measure(self._text) + self._padx * 2
         self._box_h = self._font.metrics("linespace") + self._pady * 2
+        self._text_top = cap_centred_top(self, self._font, self._box_h / 2)
         super().configure(width=self._box_w, height=self._box_h)
         self._redraw()
 
@@ -310,7 +335,7 @@ class PillButton(tk.Canvas):
         if fill or outline:
             self._photo = pill(self._box_w, self._box_h, fill or self._bg, outline)
             self.create_image(0, 0, anchor="nw", image=self._photo)
-        self.create_text(self._box_w / 2, self._box_h / 2, text=self._text,
+        self.create_text(self._box_w / 2, self._text_top, anchor="n", text=self._text,
                          font=self._font, fill=fg)
 
     def _on_enter(self, _e):
@@ -443,7 +468,9 @@ class ToggleSwitch(tk.Canvas):
         knob_x = self.TRACK_W - self.KNOB - pad if on else pad
         self._knob_img = dot(self.KNOB, "#0c0e13" if on else TEXT_DIM)
         self.create_image(knob_x, y + pad, anchor="nw", image=self._knob_img)
-        self.create_text(self.TRACK_W + self._gap, self._box_h / 2, anchor="w",
+        # Centred on the track, by its capitals -- see cap_centred_top.
+        self.create_text(self.TRACK_W + self._gap,
+                         cap_centred_top(self, self._font, y + self.TRACK_H / 2), anchor="nw",
                          text=self._text, font=self._font,
                          fill=TEXT_BRIGHT if self._hover else self._fg)
 
