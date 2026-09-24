@@ -2,7 +2,7 @@
 
 A lightweight Windows desktop app that watches the [SPT Forge](https://sp-mod.com/mods) for new and updated mods — and, optionally, checks your own installed mods against it.
 
-> **The Forge moved to sp-mod.com.** The Forge changed hands and now lives at **sp-mod.com**; the old `forge.sp-tarkov.com` is fully offline. **Update to 3.4.5** — anything before 3.3.0 points at the dead domain and cannot reach anything at all. Your saved history carries over automatically on first launch: mod ids were preserved across the move, so already-seen mods aren't re-reported and your tracked count stays intact.
+> **The Forge moved to sp-mod.com.** The Forge changed hands and now lives at **sp-mod.com**; the old `forge.sp-tarkov.com` is fully offline. **Update to 3.4.6** — anything before 3.3.0 points at the dead domain and cannot reach anything at all. Your saved history carries over automatically on first launch: mod ids were preserved across the move, so already-seen mods aren't re-reported and your tracked count stays intact.
 
 > **Note on antivirus flags:** A small number of vendors may flag this exe as malicious. Most of them (ALYac, Arcabit, Emsisoft, eScan, GData, VIPRE) all run BitDefender's engine under the hood and are triggering off the same single false positive detection. These are not real threats. Source code is open on GitHub.
 
@@ -104,6 +104,21 @@ Click **Local Mods** to check your own installed mods against the Forge — enti
 - **Fails safe, never guesses** — Ambiguous matches are reported as unmatched rather than guessed at, and any network failure leaves the display untouched instead of hiding mods
 - **Low resource usage** — Connection pooling, shared fonts, a smart timer that sleeps when the window is hidden, and state writes skipped when nothing changed
 - **Standalone .exe** — No Python installation required, just download and run
+
+The packaged Windows x64 app includes Python, Tcl/Tk, its Python libraries
+(`requests`, `Pillow`, `pystray`, and `winotify`), and a self-contained .NET 10
+ModReader helper. Users do not need to install Python or .NET separately.
+Local scanning also needs the mod DLLs and their dependencies from the selected
+SPT install; Forge lookups need an internet connection. Server metadata supports
+both SPT 4.0's `AbstractModMetadata` and SPT 4.1's `IModMetadata`.
+
+To rebuild after changing ModReader, run `dotnet publish modreader/ModReader.csproj
+-c Release -o modreader/publish`, copy `modreader/publish/ModReader.exe` to
+`assets/ModReader.exe`, then run the PyInstaller spec. Building requires the
+.NET 10 SDK and Python with `requirements.txt` plus PyInstaller installed.
+Run `python -m pytest tests -v` for scan regression tests (pytest is a development
+dependency). Real-install tests use `SPT41_ROOT` and `SPT40_ROOT`, defaulting to
+`D:\SPT416_Test` and `D:\SPT4013_Test`, and skip when those installs are absent.
 
 ---
 

@@ -17,7 +17,8 @@
 // MetadataLoadContext would have given.
 //
 // Server (SPT v4) mods can't be read that way -- their metadata only exists
-// as real property values on a constructed subclass of AbstractModMetadata,
+// as real property values on a constructed AbstractModMetadata subclass or
+// IModMetadata implementation (SPT 4.1+),
 // so that path does actually instantiate the type and execute whatever code
 // that involves. That's an intentional, accepted trade-off: these are mods
 // the user already runs on their own server.
@@ -32,13 +33,16 @@ var request = JsonSerializer.Deserialize<ScanRequest>(Console.In.ReadToEnd(), Js
 
 var dllIndex = DllIndex.Build(request.SptRoot, request.ClientDlls, request.ServerDlls);
 
+// Metadata constructors/getters may log; stdout must remain a single JSON response.
+var responseWriter = Console.Out;
+Console.SetOut(Console.Error);
 var response = new ScanResponse
 {
     Client = request.ClientDlls.ToDictionary(p => p, p => ModReader.ReadClient(p, dllIndex)),
     Server = request.ServerDlls.ToDictionary(p => p, p => ModReader.ReadServer(p, dllIndex)),
 };
 
-Console.Out.Write(JsonSerializer.Serialize(response, JsonOpts.Write));
+responseWriter.Write(JsonSerializer.Serialize(response, JsonOpts.Write));
 
 // ── Request / response shapes ────────────────────────────────────────────
 
@@ -132,12 +136,17 @@ static class ModReader
         InLoadContext(dllPath, dllIndex, assembly =>
         {
             var metadataType = SafeGetTypes(assembly)
-                .FirstOrDefault(t => !t.IsAbstract && t.BaseType?.Name == "AbstractModMetadata");
+                .FirstOrDefault(t => t.IsClass && !t.IsAbstract && !t.ContainsGenericParameters
+                    && (t.GetInterfaces().Any(i => i.Name == "IModMetadata")
+                        || HasMetadataBase(t)));
             if (metadataType == null)
                 return null;
 
             var instance = Activator.CreateInstance(metadataType);
-            string? Prop(string name) => metadataType.GetProperty(name)?.GetValue(instance)?.ToString();
+            // Reading through the interface also supports explicit implementations.
+            var contract = metadataType.GetInterfaces().FirstOrDefault(i => i.Name == "IModMetadata");
+            string? Prop(string name) => (contract?.GetProperty(name) ?? metadataType.GetProperty(name))
+                ?.GetValue(instance)?.ToString();
 
             var guid = Prop("ModGuid");
             if (string.IsNullOrEmpty(guid))
@@ -152,6 +161,13 @@ static class ModReader
                 SptVersion = Prop("SptVersion"),
             };
         });
+
+    static bool HasMetadataBase(Type type)
+    {
+        for (var parent = type.BaseType; parent != null; parent = parent.BaseType)
+            if (parent.Name == "AbstractModMetadata") return true;
+        return false;
+    }
 
     static ModRecord? InLoadContext(string dllPath, Dictionary<string, string> dllIndex,
                                     Func<Assembly, ModRecord?> read)

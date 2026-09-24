@@ -194,7 +194,18 @@ Then `python -m PyInstaller --noconfirm SPTModChecker_v<VER>.spec`.
 
 **Update this section as work completes.**
 
-- Version **3.4.5**, working branch **`checkertest`** (not `main`).
+- SPT 4.1 server scan fix on `spt41-server-mods`: ModReader now reads
+  `IModMetadata` (including explicit implementations) as well as inherited
+  `AbstractModMetadata`. Rebuilt `assets/ModReader.exe`. Helper failures raise
+  scan errors instead of successful empty scans; individual DLL errors are
+  logged while readable mods remain available. Sixteen regression tests pass,
+  including real SPT 4.1.6 and 4.0.13 installs and a scan without client plugins.
+  Windows 10 itself has not been tested. Fix version is 3.4.6.
+  Executable: `dist/SPTModChecker_v3.4.6.exe` (and matching zip).
+  Frozen smoke test passed: alive after 18 seconds, fresh `last_check`, embedded
+  helper matches `assets/ModReader.exe`; original registry entries restored.
+
+- Version **3.4.6**, working branch **`spt41-server-mods`**, based on `checkertest` (not `main`).
 - 3.4.0 was a full visual overhaul: `theme.py` is new, and cards, header,
   stats, popups and window sizing were all rebuilt. 3.4.1 fixed two bugs it
   introduced (popup close button activating the control underneath; change
