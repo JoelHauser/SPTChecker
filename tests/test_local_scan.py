@@ -7,9 +7,9 @@ former, so every 4.1 server mod read as nothing. A server-only install (no BepIn
 plugins) then reported "0 mods scanned" with no error at all.
 
 Run:  python -m pytest tests -v
-Installs (skipped if absent; override with env vars):
-  SPT41_ROOT   default D:\\SPT416_Test   an SPT 4.1.x install with server mods
-  SPT40_ROOT   default D:\\SPT4013_Test  an SPT 4.0.x install with server mods
+Opt-in installs (integration tests skip when the env var is unset):
+  SPT41_ROOT   path to an SPT 4.1.x install with server mods
+  SPT40_ROOT   path to an SPT 4.0.x install with server mods
 """
 
 import os
@@ -24,8 +24,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sptchecker import localmods  # noqa: E402
 
-SPT41 = Path(os.environ.get("SPT41_ROOT", r"D:\SPT416_Test"))
-SPT40 = Path(os.environ.get("SPT40_ROOT", r"D:\SPT4013_Test"))
+def configured_install(variable):
+    value = os.environ.get(variable)
+    if not value:
+        pytest.skip(f"Set {variable} to opt into real-install scan tests")
+    root = Path(value).expanduser().resolve()
+    if not root.is_dir():
+        pytest.fail(f"{variable} is not an existing install directory: {root}")
+    return root
+
+
+@pytest.fixture
+def spt41_root():
+    return configured_install("SPT41_ROOT")
+
+
+@pytest.fixture
+def spt40_root():
+    return configured_install("SPT40_ROOT")
 
 
 def server_records(root):
@@ -38,20 +54,18 @@ def mod_folders(root, server_dir):
     return sorted(d.name for d in mods.iterdir() if d.is_dir() and any(d.glob("*.dll")))
 
 
-@pytest.mark.skipif(not SPT41.is_dir(), reason="no SPT 4.1 install")
-def test_spt41_server_mods_are_read():
+def test_spt41_server_mods_are_read(spt41_root):
     """The reported bug: a 4.1 install's server mods must come back with real metadata."""
-    records = server_records(SPT41)
+    records = server_records(spt41_root)
     found = {Path(r["path"]).parent.name for r in records}
 
-    assert set(mod_folders(SPT41, "SPT_Runtime")) <= found, f"server mods missing from the scan: {found}"
+    assert set(mod_folders(spt41_root, "SPT_Runtime")) <= found, f"server mods missing from the scan: {found}"
     for record in records:
         assert record["guid"] and record["version"], record
 
 
-@pytest.mark.skipif(not SPT41.is_dir(), reason="no SPT 4.1 install")
-def test_spt41_reads_the_values_the_mod_declares():
-    sherpa = [r for r in server_records(SPT41) if r["guid"] == "com.sherpa.server"]
+def test_spt41_reads_the_values_the_mod_declares(spt41_root):
+    sherpa = [r for r in server_records(spt41_root) if r["guid"] == "com.sherpa.server"]
     if not sherpa:
         pytest.skip("Sherpa is not installed in the 4.1 test install")
     assert sherpa[0]["name"] == "Sherpa"
@@ -59,12 +73,11 @@ def test_spt41_reads_the_values_the_mod_declares():
     assert sherpa[0]["spt_version"] and "4.1.6" in sherpa[0]["spt_version"]
 
 
-@pytest.mark.skipif(not SPT40.is_dir(), reason="no SPT 4.0 install")
-def test_spt40_server_mods_still_read():
+def test_spt40_server_mods_still_read(spt40_root):
     """The 4.0 form (a subclass of AbstractModMetadata) must keep working."""
-    found = {Path(r["path"]).parent.name for r in server_records(SPT40)}
+    found = {Path(r["path"]).parent.name for r in server_records(spt40_root)}
 
-    assert set(mod_folders(SPT40, "SPT")) <= found, f"server mods missing from the scan: {found}"
+    assert set(mod_folders(spt40_root, "SPT")) <= found, f"server mods missing from the scan: {found}"
 
 
 def test_a_failing_modreader_is_reported_not_turned_into_zero_mods(tmp_path, monkeypatch):
@@ -95,11 +108,12 @@ def test_nothing_to_read_needs_no_helper(tmp_path, monkeypatch):
     assert localmods._run_modreader(str(tmp_path), [], []) == {"client": {}, "server": {}}
 
 
-@pytest.mark.skipif(not SPT41.is_dir(), reason="no SPT 4.1 install")
-def test_spt41_without_client_plugins(monkeypatch):
+def test_spt41_without_client_plugins(monkeypatch, spt41_root):
     monkeypatch.setattr(localmods, "find_bepinex_plugins", lambda root: [])
-    records = server_records(SPT41)
-    assert {Path(r["path"]).parent.name for r in records} >= {"Sherpa", "fika-server"}
+    records = server_records(spt41_root)
+    expected = set(mod_folders(spt41_root, "SPT_Runtime"))
+    assert expected, "Configure an SPT 4.1 install containing server mods"
+    assert expected <= {Path(r["path"]).parent.name for r in records}
 
 
 @pytest.mark.parametrize("stdout", ["not json", "null", "[]", '{}',

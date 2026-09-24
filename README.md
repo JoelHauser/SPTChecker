@@ -117,8 +117,10 @@ To rebuild after changing ModReader, run `dotnet publish modreader/ModReader.csp
 `assets/ModReader.exe`, then run the PyInstaller spec. Building requires the
 .NET 10 SDK and Python with `requirements.txt` plus PyInstaller installed.
 Run `python -m pytest tests -v` for scan regression tests (pytest is a development
-dependency). Real-install tests use `SPT41_ROOT` and `SPT40_ROOT`, defaulting to
-`D:\SPT416_Test` and `D:\SPT4013_Test`, and skip when those installs are absent.
+dependency). To opt into real-install tests, set `SPT41_ROOT` and/or `SPT40_ROOT`
+to your own SPT 4.1.x/4.0.x install directories containing server mods. There are
+no default install paths: tests for each version skip when its variable is unset,
+and an explicitly configured directory that does not exist fails the test.
 
 ---
 

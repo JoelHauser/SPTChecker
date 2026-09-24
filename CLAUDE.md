@@ -200,6 +200,8 @@ Then `python -m PyInstaller --noconfirm SPTModChecker_v<VER>.spec`.
   scan errors instead of successful empty scans; individual DLL errors are
   logged while readable mods remain available. Sixteen regression tests pass,
   including real SPT 4.1.6 and 4.0.13 installs and a scan without client plugins.
+  Real-install tests require explicit `SPT41_ROOT` / `SPT40_ROOT` environment
+  variables; otherwise 12 standalone tests pass and four integration tests skip.
   Windows 10 itself has not been tested. Fix version is 3.4.6.
   Executable: `dist/SPTModChecker_v3.4.6.exe` (and matching zip).
   Frozen smoke test passed: alive after 18 seconds, fresh `last_check`, embedded
