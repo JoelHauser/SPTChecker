@@ -194,7 +194,20 @@ Then `python -m PyInstaller --noconfirm SPTModChecker_v<VER>.spec`.
 
 **Update this section as work completes.**
 
-- Version **3.4.5**, working branch **`checkertest`** (not `main`).
+- Version **3.4.6**, working branch **`checkertest`** (not `main`).
+- 3.4.6 (contributed by scrmjt, PR #28) fixed SPT 4.1 server mods scanning as
+  nothing: 4.1 replaced the `AbstractModMetadata` base class with the
+  `IModMetadata` interface, and ModReader only knew the former. It now reads
+  both. Helper failures (missing exe, crash, timeout, bad JSON) raise
+  `ModReaderError` into the scan window's error view instead of reading as
+  "0 mods scanned"; a single unreadable DLL is logged and skipped. Regression
+  tests are in `tests/test_local_scan.py`; the real-install ones need
+  `SPT41_ROOT` / `SPT40_ROOT` set and skip otherwise.
+- **3.4.6 is built and smoke-tested**: `dist/SPTModChecker_v3.4.6.exe` plus a
+  matching `.zip` (exe alone at the zip root). Smoke test ran against a fresh
+  data dir: alive after 20s, `last_check` written; registry entries backed up
+  and restored. A draft GitHub release carries the zip; publishing it creates
+  the `V3.4.6` tag. The Forge upload is still by hand.
 - 3.4.0 was a full visual overhaul: `theme.py` is new, and cards, header,
   stats, popups and window sizing were all rebuilt. 3.4.1 fixed two bugs it
   introduced (popup close button activating the control underneath; change
