@@ -1,5 +1,6 @@
 import ctypes
 import json
+import logging
 import subprocess
 from ctypes import wintypes
 from pathlib import Path
@@ -73,6 +74,10 @@ def detect_spt_version(spt_root):
         return None
 
 
+class ModReaderError(RuntimeError):
+    """The metadata helper failed; the scan UI must not report a successful zero."""
+
+
 def _run_modreader(spt_root, client_dlls, server_dlls):
     """Run the ModReader.exe helper once for the whole batch (not per-DLL --
     process startup cost adds up fast otherwise) and return its parsed
@@ -82,12 +87,13 @@ def _run_modreader(spt_root, client_dlls, server_dlls):
     modreader/Program.cs) instead of guessing at compiled bytecode shapes --
     it can read any mod regardless of what code the author used to build
     their metadata, which no amount of static-pattern-matching in Python
-    ever could. Returns empty results (not a crash) if the helper is
-    missing or fails; a scan finding nothing is expected/recoverable, same
-    as any other per-mod extraction failure.
+    ever could. Helper failures raise ModReaderError for the existing scan
+    error UI; an empty install still returns empty results.
     """
-    if not MODREADER_EXE.exists():
+    if not client_dlls and not server_dlls:
         return {"client": {}, "server": {}}
+    if not MODREADER_EXE.is_file():
+        raise ModReaderError(f"ModReader helper is missing: {MODREADER_EXE}")
 
     request = {
         "sptRoot": str(spt_root),
@@ -100,12 +106,42 @@ def _run_modreader(spt_root, client_dlls, server_dlls):
             input=json.dumps(request),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=MODREADER_TIMEOUT_SECONDS,
             creationflags=_CREATE_NO_WINDOW,
         )
-        return json.loads(proc.stdout)
-    except Exception:
-        return {"client": {}, "server": {}}
+    except subprocess.TimeoutExpired as exc:
+        raise ModReaderError(f"ModReader timed out after {MODREADER_TIMEOUT_SECONDS} seconds.") from exc
+    except OSError as exc:
+        raise ModReaderError(f"Could not start ModReader: {exc}") from exc
+
+    if proc.returncode:
+        detail = proc.stderr.strip()[:2000]
+        raise ModReaderError(f"ModReader failed with exit code {proc.returncode}. {detail}")
+    try:
+        output = json.loads(proc.stdout)
+    except ValueError as exc:
+        raise ModReaderError(f"ModReader returned invalid JSON. {proc.stderr.strip()[:2000]}") from exc
+    if not isinstance(output, dict) or any(
+        not isinstance(output.get(key), dict) for key in ("client", "server")
+    ):
+        raise ModReaderError("ModReader returned an invalid response structure.")
+    for key, paths in (("client", client_dlls), ("server", server_dlls)):
+        for path in paths:
+            if str(path) not in output[key]:
+                raise ModReaderError(f"ModReader omitted a result for {path}.")
+            record = output[key][str(path)]
+            if record is not None and not isinstance(record, dict):
+                raise ModReaderError(f"ModReader returned invalid metadata for {path}.")
+            if record and record.get("error"):
+                # A single incompatible DLL must not hide the readable mods.
+                logging.getLogger(__name__).warning("ModReader could not read %s: %s", path, record["error"])
+    records = [record for key in ("client", "server") for record in output[key].values() if record]
+    failures = [record["error"] for record in records if record.get("error")]
+    if failures and not any(record.get("guid") and not record.get("error") for record in records):
+        raise ModReaderError(f"ModReader could not read any mod metadata: {failures[0]}")
+    return output
 
 
 def find_bepinex_plugins(spt_root):

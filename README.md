@@ -2,7 +2,7 @@
 
 A lightweight Windows desktop app that watches the [SPT Forge](https://sp-mod.com/mods) for new and updated mods — and, optionally, checks your own installed mods against it.
 
-> **The Forge moved to sp-mod.com.** The Forge changed hands and now lives at **sp-mod.com**; the old `forge.sp-tarkov.com` is fully offline. **Update to 3.4.5** — anything before 3.3.0 points at the dead domain and cannot reach anything at all. Your saved history carries over automatically on first launch: mod ids were preserved across the move, so already-seen mods aren't re-reported and your tracked count stays intact.
+> **The Forge moved to sp-mod.com.** The Forge changed hands and now lives at **sp-mod.com**; the old `forge.sp-tarkov.com` is fully offline. **Update to 3.4.6** — anything before 3.3.0 points at the dead domain and cannot reach anything at all. Your saved history carries over automatically on first launch: mod ids were preserved across the move, so already-seen mods aren't re-reported and your tracked count stays intact.
 
 > **Note on antivirus flags:** A small number of vendors may flag this exe as malicious. Most of them (ALYac, Arcabit, Emsisoft, eScan, GData, VIPRE) all run BitDefender's engine under the hood and are triggering off the same single false positive detection. These are not real threats. Source code is open on GitHub.
 
@@ -103,7 +103,19 @@ Click **Local Mods** to check your own installed mods against the Forge — enti
 - **Unpublished mod detection** — Mods removed from the Forge are automatically cleared from the display, verified in a single batched lookup rather than one request per mod
 - **Fails safe, never guesses** — Ambiguous matches are reported as unmatched rather than guessed at, and any network failure leaves the display untouched instead of hiding mods
 - **Low resource usage** — Connection pooling, shared fonts, a smart timer that sleeps when the window is hidden, and state writes skipped when nothing changed
-- **Standalone .exe** — No Python installation required, just download and run
+- **Standalone .exe** — No Python or .NET installation required: Python, its libraries and the self-contained .NET mod-reading helper are all bundled, just download and run
+- **SPT 4.0 and 4.1 server mods** — Local scanning reads server mod metadata in both the 4.0 (`AbstractModMetadata`) and 4.1 (`IModMetadata`) formats
+
+---
+
+### Building from source
+
+Building requires the .NET 10 SDK and Python with `requirements.txt` plus PyInstaller installed.
+
+1. If you changed the ModReader helper, rebuild it with `dotnet publish modreader/ModReader.csproj -c Release -o modreader/publish` and copy `modreader/publish/ModReader.exe` to `assets/ModReader.exe`.
+2. Run `python -m PyInstaller --noconfirm SPTModChecker_v<VERSION>.spec`.
+
+Run `python -m pytest tests -v` for the scan regression tests (pytest is a development dependency). To also run the tests against real installs, set `SPT41_ROOT` and/or `SPT40_ROOT` to your own SPT 4.1.x / 4.0.x install directories containing server mods. Each version's tests skip when its variable is unset, and a configured directory that doesn't exist fails the test.
 
 ---
 
