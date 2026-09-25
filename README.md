@@ -125,4 +125,4 @@ Huge thanks to **AlexTushonka** — living legend — for taking on the Forge, k
 
 Local mod scanning was inspired by Refringe's **Check Mods** CLI.
 
-Thanks to **[scrmjt](https://github.com/scrmjt)** for the SPT version filter, the choosable check schedule, and properly centred button labels — the headline changes in 3.4.5, contributed in [#27](https://github.com/JoelHauser/SPTChecker/pull/27).
+Thanks to **[scrmjt](https://github.com/scrmjt)** for the SPT version filter, the choosable check schedule, and properly centred button labels — the headline changes in 3.4.5, contributed in [#27](https://github.com/JoelHauser/SPTChecker/pull/27) — and for the SPT 4.1 server mod scanning fix in 3.4.6, contributed in [#28](https://github.com/JoelHauser/SPTChecker/pull/28).
