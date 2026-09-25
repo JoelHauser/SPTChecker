@@ -103,24 +103,19 @@ Click **Local Mods** to check your own installed mods against the Forge — enti
 - **Unpublished mod detection** — Mods removed from the Forge are automatically cleared from the display, verified in a single batched lookup rather than one request per mod
 - **Fails safe, never guesses** — Ambiguous matches are reported as unmatched rather than guessed at, and any network failure leaves the display untouched instead of hiding mods
 - **Low resource usage** — Connection pooling, shared fonts, a smart timer that sleeps when the window is hidden, and state writes skipped when nothing changed
-- **Standalone .exe** — No Python installation required, just download and run
+- **Standalone .exe** — No Python or .NET installation required: Python, its libraries and the self-contained .NET mod-reading helper are all bundled, just download and run
+- **SPT 4.0 and 4.1 server mods** — Local scanning reads server mod metadata in both the 4.0 (`AbstractModMetadata`) and 4.1 (`IModMetadata`) formats
 
-The packaged Windows x64 app includes Python, Tcl/Tk, its Python libraries
-(`requests`, `Pillow`, `pystray`, and `winotify`), and a self-contained .NET 10
-ModReader helper. Users do not need to install Python or .NET separately.
-Local scanning also needs the mod DLLs and their dependencies from the selected
-SPT install; Forge lookups need an internet connection. Server metadata supports
-both SPT 4.0's `AbstractModMetadata` and SPT 4.1's `IModMetadata`.
+---
 
-To rebuild after changing ModReader, run `dotnet publish modreader/ModReader.csproj
--c Release -o modreader/publish`, copy `modreader/publish/ModReader.exe` to
-`assets/ModReader.exe`, then run the PyInstaller spec. Building requires the
-.NET 10 SDK and Python with `requirements.txt` plus PyInstaller installed.
-Run `python -m pytest tests -v` for scan regression tests (pytest is a development
-dependency). To opt into real-install tests, set `SPT41_ROOT` and/or `SPT40_ROOT`
-to your own SPT 4.1.x/4.0.x install directories containing server mods. There are
-no default install paths: tests for each version skip when its variable is unset,
-and an explicitly configured directory that does not exist fails the test.
+### Building from source
+
+Building requires the .NET 10 SDK and Python with `requirements.txt` plus PyInstaller installed.
+
+1. If you changed the ModReader helper, rebuild it with `dotnet publish modreader/ModReader.csproj -c Release -o modreader/publish` and copy `modreader/publish/ModReader.exe` to `assets/ModReader.exe`.
+2. Run `python -m PyInstaller --noconfirm SPTModChecker_v<VERSION>.spec`.
+
+Run `python -m pytest tests -v` for the scan regression tests (pytest is a development dependency). To also run the tests against real installs, set `SPT41_ROOT` and/or `SPT40_ROOT` to your own SPT 4.1.x / 4.0.x install directories containing server mods. Each version's tests skip when its variable is unset, and a configured directory that doesn't exist fails the test.
 
 ---
 

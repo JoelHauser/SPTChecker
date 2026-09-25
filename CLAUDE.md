@@ -194,20 +194,16 @@ Then `python -m PyInstaller --noconfirm SPTModChecker_v<VER>.spec`.
 
 **Update this section as work completes.**
 
-- SPT 4.1 server scan fix on `spt41-server-mods`: ModReader now reads
-  `IModMetadata` (including explicit implementations) as well as inherited
-  `AbstractModMetadata`. Rebuilt `assets/ModReader.exe`. Helper failures raise
-  scan errors instead of successful empty scans; individual DLL errors are
-  logged while readable mods remain available. Sixteen regression tests pass,
-  including real SPT 4.1.6 and 4.0.13 installs and a scan without client plugins.
-  Real-install tests require explicit `SPT41_ROOT` / `SPT40_ROOT` environment
-  variables; otherwise 12 standalone tests pass and four integration tests skip.
-  Windows 10 itself has not been tested. Fix version is 3.4.6.
-  Executable: `dist/SPTModChecker_v3.4.6.exe` (and matching zip).
-  Frozen smoke test passed: alive after 18 seconds, fresh `last_check`, embedded
-  helper matches `assets/ModReader.exe`; original registry entries restored.
-
-- Version **3.4.6**, working branch **`spt41-server-mods`**, based on `checkertest` (not `main`).
+- Version **3.4.6**, working branch **`checkertest`** (not `main`).
+- 3.4.6 (contributed by scrmjt, PR #28) fixed SPT 4.1 server mods scanning as
+  nothing: 4.1 replaced the `AbstractModMetadata` base class with the
+  `IModMetadata` interface, and ModReader only knew the former. It now reads
+  both. Helper failures (missing exe, crash, timeout, bad JSON) raise
+  `ModReaderError` into the scan window's error view instead of reading as
+  "0 mods scanned"; a single unreadable DLL is logged and skipped. Regression
+  tests are in `tests/test_local_scan.py`; the real-install ones need
+  `SPT41_ROOT` / `SPT40_ROOT` set and skip otherwise. 3.4.6 has not been built
+  or released yet.
 - 3.4.0 was a full visual overhaul: `theme.py` is new, and cards, header,
   stats, popups and window sizing were all rebuilt. 3.4.1 fixed two bugs it
   introduced (popup close button activating the control underneath; change
