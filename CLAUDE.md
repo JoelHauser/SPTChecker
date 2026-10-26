@@ -164,13 +164,13 @@ building — several bugs only appear at 125%/150%.
 
 ## Releasing
 
-The version lives in **four** places and they must agree:
+The version lives in **three** places and they must agree (the README's old
+"Update to X" migration notice was removed after 3.5.0):
 
 1. `config.APP_VERSION` — the runtime source of truth
 2. `version_info.py` — `filevers`, `prodvers`, `FileVersion`, `ProductVersion`,
    `OriginalFilename`
 3. `SPTModChecker_v<VER>.spec` — the filename *and* the `name=` inside it
-4. `README.md` — the "Update to X" line in the migration notice
 
 Then `python -m PyInstaller --noconfirm SPTModChecker_v<VER>.spec`.
 
