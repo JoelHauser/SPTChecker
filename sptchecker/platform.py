@@ -88,29 +88,72 @@ def disable_show_animation(window):
         pass
 
 
+_GCL_STYLE = -26
+_CS_VREDRAW = 0x0001
+_CS_HREDRAW = 0x0002
+
+
+def disable_resize_repaint(window):
+    """Stop Windows repainting every widget in the app whenever the window
+    changes size.
+
+    Tk registers its window classes (TkTopLevel for the frame, TkChild for
+    every widget) with CS_HREDRAW | CS_VREDRAW, which invalidates the whole
+    window -- children included -- on each step of a resize. Every card is a
+    dozen child windows, so dragging the window taller repainted all ~180 of
+    them on every pixel of the drag, cards that hadn't changed at all: about
+    170ms a step with just the default 14 cards, which is what made the drag
+    stutter. Tk already redraws any widget whose own size changes, so the flags
+    only ever bought duplicate work; without them the same drag measured
+    ~33ms a step and repainted no cards.
+
+    Class styles are per class, so clearing them on this window's own two
+    windows covers every widget and popup the process creates.
+    """
+    try:
+        user32 = ctypes.windll.user32
+        user32.GetClassLongPtrW.restype = ctypes.c_size_t
+        user32.GetClassLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int]
+        user32.SetClassLongPtrW.restype = ctypes.c_size_t
+        user32.SetClassLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_size_t]
+        user32.GetParent.restype = wintypes.HWND
+        user32.GetParent.argtypes = [wintypes.HWND]
+        inner = window.winfo_id()
+        for hwnd in (user32.GetParent(inner), inner):  # TkTopLevel, TkChild
+            style = user32.GetClassLongPtrW(hwnd, _GCL_STYLE)
+            user32.SetClassLongPtrW(hwnd, _GCL_STYLE, style & ~(_CS_VREDRAW | _CS_HREDRAW))
+    except Exception:
+        # Purely a performance measure -- resizing still works without it.
+        pass
+
+
 # ── Startup registry ──────────────────────────────────────────────────
 
 
-def is_startup_enabled():
+def _stored_startup_command():
+    """The Run entry's command line, or None if there isn't one."""
     try:
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_REG_PATH, 0, winreg.KEY_READ)
-        winreg.QueryValueEx(key, STARTUP_REG_NAME)
-        winreg.CloseKey(key)
-        return True
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_REG_PATH, 0,
+                            winreg.KEY_READ) as key:
+            return winreg.QueryValueEx(key, STARTUP_REG_NAME)[0]
     except FileNotFoundError:
-        return False
+        return None
+
+
+def is_startup_enabled():
+    return _stored_startup_command() is not None
 
 
 def refresh_startup_if_stale():
-    """Re-write the startup registry entry if the stored exe path doesn't match the running exe."""
-    try:
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_REG_PATH, 0, winreg.KEY_READ)
-        stored, _ = winreg.QueryValueEx(key, STARTUP_REG_NAME)
-        winreg.CloseKey(key)
-    except FileNotFoundError:
-        return
-    current_exe = sys.executable
-    if current_exe.lower() not in stored.lower():
+    """Re-write the startup registry entry if it no longer launches this copy.
+
+    Compared against the whole command set_startup_enabled would write, not
+    just sys.executable: run from source that is python.exe while the entry
+    holds pythonw.exe, so the old substring test rewrote the key on every
+    launch -- and it never noticed main.py itself having moved.
+    """
+    stored = _stored_startup_command()
+    if stored is not None and stored.lower() != _launch_command("--background").lower():
         set_startup_enabled(True)
 
 
@@ -134,16 +177,16 @@ def _launch_command(*args):
 
 
 def set_startup_enabled(enable):
-    key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_REG_PATH, 0, winreg.KEY_SET_VALUE)
-    if enable:
-        winreg.SetValueEx(key, STARTUP_REG_NAME, 0, winreg.REG_SZ,
-                          _launch_command("--background"))
-    else:
-        try:
-            winreg.DeleteValue(key, STARTUP_REG_NAME)
-        except FileNotFoundError:
-            pass
-    winreg.CloseKey(key)
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_REG_PATH, 0,
+                        winreg.KEY_SET_VALUE) as key:
+        if enable:
+            winreg.SetValueEx(key, STARTUP_REG_NAME, 0, winreg.REG_SZ,
+                              _launch_command("--background"))
+        else:
+            try:
+                winreg.DeleteValue(key, STARTUP_REG_NAME)
+            except FileNotFoundError:
+                pass
 
 
 # ── Toast click activation ───────────────────────────────────────────

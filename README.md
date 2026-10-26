@@ -1,8 +1,10 @@
 ## SPTChecker
 
+> **3.5.0 is the last release I'll be doing.** If you feel like picking up the torch, reach out to me — [opening an issue](https://github.com/JoelHauser/SPTChecker/issues) here is the easiest way.
+
 A lightweight Windows desktop app that watches the [SPT Forge](https://sp-mod.com/mods) for new and updated mods — and, optionally, checks your own installed mods against it.
 
-> **The Forge moved to sp-mod.com.** The Forge changed hands and now lives at **sp-mod.com**; the old `forge.sp-tarkov.com` is fully offline. **Update to 3.4.6** — anything before 3.3.0 points at the dead domain and cannot reach anything at all. Your saved history carries over automatically on first launch: mod ids were preserved across the move, so already-seen mods aren't re-reported and your tracked count stays intact.
+> **The Forge moved to sp-mod.com.** The Forge changed hands and now lives at **sp-mod.com**; the old `forge.sp-tarkov.com` is fully offline. **Update to 3.5.0** — anything before 3.3.0 points at the dead domain and cannot reach anything at all. Your saved history carries over automatically on first launch: mod ids were preserved across the move, so already-seen mods aren't re-reported and your tracked count stays intact.
 
 > **Note on antivirus flags:** A small number of vendors may flag this exe as malicious. Most of them (ALYac, Arcabit, Emsisoft, eScan, GData, VIPRE) all run BitDefender's engine under the hood and are triggering off the same single false positive detection. These are not real threats. Source code is open on GitHub.
 
@@ -23,7 +25,7 @@ It can also do the reverse: point it at your SPT install folder and it'll scan y
 3. Every 15 minutes it re-fetches and compares against stored state — matching the shortest cache window sp-mod.com serves, since checking more often can't surface anything newer. Click the countdown in the status bar to check every hour, 4, 12 or 24 hours, or once a week instead, or only when you click **Check Now**. Restarting the app doesn't reset the schedule, so a daily check stays daily even if you reboot more often.
 4. Newly seen mods are flagged **New**. The Recently Updated column tracks fresh releases of existing mods.
 5. If a mod author unpublishes their mod, it's automatically removed from the display.
-6. Results persist across checks and restarts — new findings push older entries down in a rolling history (up to 7 per column).
+6. Results persist across checks and restarts — new findings push older entries down in a rolling history (7 per column at the default size, and more fill in under the oldest as you drag the window taller, up to 25).
 7. If a check fails (site unreachable, network hiccup, rate limiting), the app doesn't crash — it shows the error in the status bar and quietly retries on the next cycle.
 
 A full check completes in roughly two seconds. Requests are paced and automatically back off if the Forge rate-limits, so the app stays a good citizen even when a check and a local scan overlap.
@@ -32,7 +34,7 @@ A full check completes in roughly two seconds. Requests are paced and automatica
 
 ### UI
 
-- **Two-panel layout** — New mods on the left, recently updated mods on the right (up to 7 per column)
+- **Two-panel layout** — New mods on the left, recently updated mods on the right (7 per column by default; make the window taller and more cards fill in below the oldest)
 - **Mod cards** — Each card shows the thumbnail, title, author, version, category, and description, on a rounded surface outlined in its category color
 - **Version diff** — Updated mods show the version change inline (e.g. `1.2.3 → 1.3.0`)
 - **SPT version filter** — The **SPT** menu in the header limits both columns to mods that run on one SPT release: the latest release, the latest of a line (**Latest 4.0.x** follows new 4.0 patches as they come out), an exact release, the version of the install you've pointed **Local Mods** at, or all versions. Each mod appears at the newest version that supports your SPT, so a mod that has moved on to a newer SPT still shows the release built for yours. Compatibility comes from the Forge's own filter, not a guess. Switching versions quietly rebuilds the columns rather than announcing every mod in them, and only the filtered mods are tracked, so the Stats window follows the filter too. Defaults to the latest SPT release

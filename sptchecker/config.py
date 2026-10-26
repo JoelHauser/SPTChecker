@@ -20,7 +20,7 @@ CACHE_DIR = DATA_DIR / "thumb_cache"
 # baseline the self-update check compares releases against. version_info.py
 # and the .spec still carry their own copy, since PyInstaller reads those at
 # build time and can't import this -- keep all three in step when bumping.
-APP_VERSION = "3.4.6"
+APP_VERSION = "3.5.0"
 
 # This app's own listing on the Forge -- where users actually download it, so
 # it's the version that matters for "am I out of date". Checked through the
@@ -160,6 +160,12 @@ MODS_UPDATES_CHUNK_SIZE = 40
 # Batched published-status lookups are bounded by the API's documented
 # per_page maximum of 50.
 PUBLISHED_CHUNK_SIZE = 50
+# How deep each column can go when the window is dragged taller than its
+# default MAX_PER_CATEGORY cards -- more mods appear under the oldest one
+# rather than empty space. Half a published-status batch, so both columns
+# together are still checked in the single unpublished_links request a check
+# has always made, never two.
+DISPLAY_POOL_SIZE = PUBLISHED_CHUNK_SIZE // 2
 
 # ── Window ─────────────────────────────────────────────────────────────
 
@@ -246,6 +252,10 @@ ACCENT_DANGER = "#ef5350"
 CATEGORY_COLORS = {
     "Weapons": "#cf4b3f",
     "Overhauls": "#d9d568",
+    # Added after the rest, when the Forge introduced the category. Hue 104,
+    # the widest gap left: 45 degrees from Overhauls and Hideout, 40 from the
+    # green ACCENT_NEW.
+    "UI": "#65cf3e",
     "Hideout": "#3fcf85",
     "Tools": "#68d9bb",
     "Audio": "#3fcfcf",
@@ -258,7 +268,7 @@ CATEGORY_COLORS = {
     "Retextures": "#c368d9",
     "Models": "#cf3fc5",
     # Deliberately desaturated/neutral, distinct from the vibrant hues above --
-    # also frees up more spacing between the remaining 13 colorful categories.
+    # also frees up more spacing between the remaining 14 colorful categories.
     "Bots": "#8d6e63",
     "Traders": "#78909c",
     "Equipment": "#9e9e9e",
