@@ -12,7 +12,7 @@ from .config import (
     ACCENT_DANGER, ACCENT_NEW, ACCENT_UPD, APP_VERSION, BG, BORDER, CARD_BG,
     CATEGORY_COLOR_DEFAULT, CATEGORY_COLORS,
     CHECK_INTERVAL_CHOICES, CHECK_INTERVAL_MINUTES, DEFAULT_SPT_VERSION_FILTER,
-    DISPLAY_FIELDS, FORGE_MOD_PAGE, FORGE_URL, LAYOUT_VERSION, MAX_PER_CATEGORY,
+    DISPLAY_FIELDS, DISPLAY_POOL_SIZE, FORGE_MOD_PAGE, FORGE_URL, LAYOUT_VERSION, MAX_PER_CATEGORY,
     SEPARATOR, SPT_VERSIONS_REFRESH_HOURS, STATE_FIELDS, STATUS_BG, TEXT,
     TEXT_BRIGHT, TEXT_DIM, TEXT_FAINT, UPDATE_CHECK_INTERVAL_HOURS,
     WINDOW_DEFAULT_GEOMETRY, WINDOW_DEFAULT_WIDTH, WINDOW_MIN_HEIGHT,
@@ -22,7 +22,8 @@ from .feed import ForgeBlocked, fetch_feeds, fetch_spt_versions, unpublished_lin
 from .localmods import detect_spt_version, scan_installed_mods
 from .matcher import match_local_mods
 from .platform import (
-    badge_icon, create_show_event, disable_show_animation, is_startup_enabled,
+    badge_icon, create_show_event, disable_resize_repaint, disable_show_animation,
+    is_startup_enabled,
     load_app_icon, refresh_startup_if_stale, register_show_protocol, send_toast,
     set_dark_title_bar, set_dpi_aware, set_startup_enabled, wait_for_show_request,
 )
@@ -35,7 +36,7 @@ from .theme import (
 from .update import check_for_update
 from .widgets import (
     CARD_GAP, ContextMenu, LocalScanSettingsWindow, ModCard, StatsWindow,
-    build_scroll_area, card_pitch,
+    build_scroll_area, card_pitch, placeholder_photo,
 )
 
 # Layout constants shared between the widgets that use them and _size_to_fit,
@@ -44,6 +45,41 @@ from .widgets import (
 BODY_PAD_X = 14
 BODY_PAD_TOP = 12
 COL_HEADER_GAP = 8
+
+
+def _split_columns(newest, updated, depth):
+    """The two columns as shown `depth` cards deep.
+
+    A mod's first publication is both the newest-created and the newest-updated
+    thing on the Forge, so it arrives in both feeds at once -- it used to take a
+    slot in both columns and fire two toasts for the single event of a mod
+    appearing. The new column wins: "this mod now exists" is the whole story,
+    and the card carries its version either way. Held out only as far down as
+    the new column reaches at this depth, and filtered before the slice rather
+    than after, so the updated column backfills to a full `depth` instead of
+    showing a hole.
+    """
+    shown_new = newest[:depth]
+    new_links = {m["link"] for m in shown_new}
+    return shown_new, [m for m in updated if m["link"] not in new_links][:depth]
+
+
+def _updated_pool(updated, pool_new_links):
+    """The updated mods kept on hand for the updated column.
+
+    Deep enough that it still fills DISPLAY_POOL_SIZE cards after
+    _split_columns holds out whatever the new column shows, at any depth: a mod
+    outside the new pool is never held out, so collecting that many of them is
+    enough. Stopping there also keeps both pools together within the single
+    unpublished_links batch.
+    """
+    pool, outside = [], 0
+    for mod in updated:
+        if outside == DISPLAY_POOL_SIZE:
+            break
+        pool.append(mod)
+        outside += mod["link"] not in pool_new_links
+    return pool
 
 
 class SPTCheckerApp:
@@ -61,12 +97,25 @@ class SPTCheckerApp:
 
         set_dark_title_bar(self.root, show=not start_hidden)
         disable_show_animation(self.root)
+        disable_resize_repaint(self.root)
 
         self._app_icon = load_app_icon()
         self._icon_photo = ImageTk.PhotoImage(self._app_icon.resize((32, 32), Image.LANCZOS))
         self.root.iconphoto(True, self._icon_photo)
 
-        self._photos = {}  # frame -> PhotoImage refs for its current cards
+        # Every mod each column can show, newest first, and how many cards deep
+        # the columns currently are -- MAX_PER_CATEGORY at the default height,
+        # more once the window is dragged taller (see _on_column_resize).
+        self._pool_new = []
+        self._pool_upd = []
+        self._visible_n = MAX_PER_CATEGORY
+        self._empty_text = {}
+        # thumb_url -> PhotoImage, so a card rebuilt or re-added by a resize
+        # reuses the image it already had instead of flashing a placeholder.
+        self._thumbs = {}
+        # Column frame -> {signature entry: ModCard}, packed or not -- see
+        # _render_column.
+        self._cards = {}
         self._checking = False
         self._recheck_pending = False
         # When the SPT release list was last fetched (time.monotonic); never, at
@@ -258,6 +307,8 @@ class SPTCheckerApp:
         new_col = tk.Frame(body, bg=BG)
         new_col.grid(row=1, column=0, sticky="nsew")
         self._new_frame = build_scroll_area(new_col)
+        # Both columns share a grid row, so one of them measures for both.
+        new_col.bind("<Configure>", self._on_column_resize)
 
         upd_col = tk.Frame(body, bg=BG)
         upd_col.grid(row=1, column=2, sticky="nsew")
@@ -355,10 +406,16 @@ class SPTCheckerApp:
         return tw, inner
 
     def _bind_tooltip(self, widget, text):
-        widget.bind("<Enter>", lambda _e: self._tooltip_hover_start(widget, text))
-        widget.bind("<Leave>", self._tooltip_hover_end)
+        # add="+": a PillButton draws its own hover on these same events, and
+        # replacing its bindings left Check Now with no hover highlight at all.
+        widget.bind("<Enter>", lambda _e: self._tooltip_hover_start(widget, text), add="+")
+        widget.bind("<Leave>", self._tooltip_hover_end, add="+")
 
     def _tooltip_hover_start(self, widget, text):
+        # Clear any pending or open tooltip first. Overwriting the id of a
+        # still-pending one orphaned it: it fired anyway, and the window it
+        # opened was never tracked, so no Leave could ever close it.
+        self._tooltip_hover_end()
         self._tooltip_id = self.root.after(700, lambda: self._show_tooltip(widget, text))
 
     def _tooltip_hover_end(self, _e=None):
@@ -378,6 +435,7 @@ class SPTCheckerApp:
 
     def _legend_enter(self, _e):
         self._legend_icon.configure(image=self._legend_icon_bright)
+        self._tooltip_hover_end()
         self._tooltip_id = self.root.after(400, self._show_legend)
 
     def _legend_leave(self, _e=None):
@@ -707,6 +765,9 @@ class SPTCheckerApp:
         threading.Thread(target=self._tray.run, daemon=True).start()
 
     def _hide_to_tray(self):
+        # A tooltip still pending would otherwise open over the desktop after
+        # the window is gone, with nothing left under the pointer to close it.
+        self._tooltip_hover_end()
         self._save_geometry()
         self._visible = False
         self.root.withdraw()
@@ -873,39 +934,42 @@ class SPTCheckerApp:
 
             prev_new = self.state.get("display_new", [])
 
-            display_new = newest[:MAX_PER_CATEGORY]
-            # A mod's first publication is both the newest-created and the
-            # newest-updated thing on the Forge, so it arrives in both feeds at
-            # once -- it used to take a slot in both columns and fire two
-            # toasts for the single event of a mod appearing. The new column
-            # wins: "this mod now exists" is the whole story, and the card
-            # carries its version either way. Filtered before the slice rather
-            # than after, so the updated column backfills to a full
-            # MAX_PER_CATEGORY instead of showing a hole.
-            new_links = {m["link"] for m in display_new}
-            display_upd = [m for m in updated if m["link"] not in new_links][:MAX_PER_CATEGORY]
+            # Kept deeper than the columns' default height, so a window dragged
+            # taller has more mods to show under the oldest one.
+            pool_new = newest[:DISPLAY_POOL_SIZE]
+            pool_upd = _updated_pool(updated, {m["link"] for m in pool_new})
 
-            # One batched lookup covering both columns, rather than a request
-            # per mod -- see unpublished_links().
-            gone = unpublished_links([m["link"] for m in display_new + display_upd])
-            display_new = [m for m in display_new if m["link"] not in gone]
-            display_upd = [m for m in display_upd if m["link"] not in gone]
+            # One batched lookup covering both pools, rather than a request
+            # per mod -- see unpublished_links(). Filtered before anything is
+            # shown, so a pulled mod's slot goes to the next one down.
+            gone = unpublished_links([m["link"] for m in pool_new + pool_upd])
+            pool_new = [m for m in pool_new if m["link"] not in gone]
+            pool_upd = [m for m in pool_upd if m["link"] not in gone]
 
-            for mod in display_upd:
+            for mod in pool_upd:
                 old_version = prev_versions.get(mod["link"], "")
                 if old_version and old_version != mod.get("version", ""):
                     mod["prev_version"] = old_version
 
-            self.state["display_new"] = self._strip_for_state(display_new)
-            self.state["display_updated"] = self._strip_for_state(display_upd)
+            self.state["display_new"] = self._strip_for_state(pool_new)
+            self.state["display_updated"] = self._strip_for_state(pool_upd)
             save_state(self.state)
 
             purge_old_thumbs()
 
-            for mod in display_new + display_upd:
+            # Thumbnails up front only for the cards on screen right now. The
+            # rest of the pool is fetched if a taller window ever shows it --
+            # not ~50 images per check from the Forge's strained image storage
+            # for cards nobody may look at.
+            shown_new, shown_upd = _split_columns(pool_new, pool_upd, self._visible_n)
+            for mod in shown_new + shown_upd:
                 pil = download_thumb(mod.get("thumb_url"))
                 mod["_pil"] = pil if pil else placeholder_thumb(mod.get("category"))
 
+            # What counts as news is judged at the columns' default depth,
+            # however tall the window is: a toast shouldn't depend on how
+            # someone sized a window that mostly sits hidden in the tray.
+            display_new, display_upd = _split_columns(pool_new, pool_upd, MAX_PER_CATEGORY)
             prev_new_links = {m["link"] for m in prev_new}
 
             def _version_moved(mod):
@@ -944,15 +1008,15 @@ class SPTCheckerApp:
             # Mark fresh mods for NEW badge
             fresh_new_links = {m["link"] for m in notify_new}
             fresh_upd_links = {m["link"] for m in notify_upd}
-            for m in display_new:
+            for m in pool_new:
                 m["is_fresh"] = m["link"] in fresh_new_links
-            for m in display_upd:
+            for m in pool_upd:
                 m["is_fresh"] = m["link"] in fresh_upd_links
 
             if not first_run:
                 self._send_notifications(notify_new, notify_upd)
 
-            self.root.after(0, self._apply, display_new, display_upd, first_run,
+            self.root.after(0, self._apply, pool_new, pool_upd, first_run,
                             len(notify_new), len(notify_upd))
         except ForgeBlocked as exc:
             self.root.after(0, self._on_error, str(exc), "")
@@ -989,7 +1053,7 @@ class SPTCheckerApp:
                 [m["link"] for m in updated_mods],
             )
 
-    def _apply(self, display_new, display_upd, first_run, n_fresh_new=0, n_fresh_upd=0):
+    def _apply(self, pool_new, pool_upd, first_run, n_fresh_new=0, n_fresh_upd=0):
         self._checking = False
         self._btn.configure(state="normal", text="Check Now")
         self._forge_dot.configure(image=self._forge_dot_ok)
@@ -997,14 +1061,12 @@ class SPTCheckerApp:
         now = datetime.now().strftime("%H:%M")
         total = len(self.state.get("mods", {}))
 
-        self._new_sig = self._render_column(
-            self._new_frame, display_new, self._new_sig, first_run,
-            "Baseline set.\nWatching for new mods…", "Nothing new since the last check.")
-        self._upd_sig = self._render_column(
-            self._upd_frame, display_upd, self._upd_sig, first_run,
-            "Baseline set.\nWatching for updates…", "No updates since the last check.")
-        self._new_count.configure(text=str(len(display_new)) if display_new else "")
-        self._upd_count.configure(text=str(len(display_upd)) if display_upd else "")
+        if first_run:
+            empty = ("Baseline set.\nWatching for new mods…",
+                     "Baseline set.\nWatching for updates…")
+        else:
+            empty = ("Nothing new since the last check.", "No updates since the last check.")
+        self._show_pools(pool_new, pool_upd, empty)
 
         if first_run:
             self._lbl_status.configure(text=f"Baseline set — {total:,} mods cataloged at {now}")
@@ -1096,11 +1158,15 @@ class SPTCheckerApp:
         cached_upd = [dict(m) for m in self.state.get("display_updated", [])]
         if not cached_new and not cached_upd:
             return None
-        for mod in cached_new + cached_upd:
-            # Thumbnails come from the on-disk cache; a miss can't be fetched
-            # while the site is unreachable, so it falls back to a placeholder.
+        # Only the cards on screen are loaded here -- see the same step in
+        # _bg_check. Thumbnails come from the on-disk cache; a miss can't be
+        # fetched while the site is unreachable, so it falls back to a
+        # placeholder.
+        shown_new, shown_upd = _split_columns(cached_new, cached_upd, self._visible_n)
+        for mod in shown_new + shown_upd:
             pil = download_thumb(mod.get("thumb_url"))
             mod["_pil"] = pil if pil else placeholder_thumb(mod.get("category"))
+        for mod in cached_new + cached_upd:
             mod["is_fresh"] = False
         return cached_new, cached_upd
 
@@ -1109,52 +1175,143 @@ class SPTCheckerApp:
         # rendered live results before these arrived.
         if self._new_sig is not None or self._upd_sig is not None:
             return
-        self._new_sig = self._render_column(
-            self._new_frame, cached_new, self._new_sig, False,
-            "", "No new mods detected yet.")
-        self._upd_sig = self._render_column(
-            self._upd_frame, cached_upd, self._upd_sig, False,
-            "", "No updates detected yet.")
-        # Only _apply used to set these, so saved cards shown after a failed
-        # first check -- and now at a launch that isn't due a check -- sat
-        # under headings with no counts.
-        self._new_count.configure(text=str(len(cached_new)) if cached_new else "")
-        self._upd_count.configure(text=str(len(cached_upd)) if cached_upd else "")
+        self._show_pools(cached_new, cached_upd,
+                         ("No new mods detected yet.", "No updates detected yet."))
 
-    def _render_column(self, frame, mods, prev_sig, first_run, baseline_text, empty_text):
-        """Render one column, returning its new content signature. When the
-        signature hasn't changed since last render, the destroy/rebuild of
-        every card is skipped -- rebuilding identical cards on every check
-        cycle caused a visible flash (including the check that fires as soon
-        as you reopen the window after it's been hidden past an interval)."""
+    def _show_pools(self, pool_new, pool_upd, empty_texts):
+        """Take a fresh set of mods for both columns and render them as deep as
+        the window currently fits."""
+        self._pool_new, self._pool_upd = pool_new, pool_upd
+        self._empty_text = dict(zip((self._new_frame, self._upd_frame), empty_texts))
+        urls = {m.get("thumb_url") for m in pool_new + pool_upd}
+        self._thumbs = {url: photo for url, photo in self._thumbs.items() if url in urls}
+        self._render_columns()
+        # _pil is only consumed by a card being built -- drop what wasn't, so
+        # stale PIL images don't linger on the mod dicts. A card built later,
+        # when a resize reaches it, reuses the cached photo instead.
+        for m in pool_new + pool_upd:
+            m.pop("_pil", None)
+
+    def _on_column_resize(self, e):
+        """Deepen or shorten both columns to however many cards now fit.
+
+        Never fewer than MAX_PER_CATEGORY: a window shorter than that scrolls
+        through the usual set rather than hiding part of it. Re-rendered only
+        when the card count actually changes, so a drag costs nothing between
+        those points.
+        """
+        fits = e.height // card_pitch(self.root)
+        n = max(MAX_PER_CATEGORY, min(DISPLAY_POOL_SIZE, fits))
+        if n == self._visible_n:
+            return
+        self._visible_n = n
+        if self._pool_new or self._pool_upd:
+            self._render_columns()
+
+    def _render_columns(self):
+        shown_new, shown_upd = _split_columns(self._pool_new, self._pool_upd, self._visible_n)
+        self._new_sig = self._render_column(
+            self._new_frame, shown_new, self._new_sig, self._pool_new)
+        self._upd_sig = self._render_column(
+            self._upd_frame, shown_upd, self._upd_sig, self._pool_upd)
+        # Set wherever cards are rendered, not only after a check -- saved
+        # cards shown after a failed first check, or at a launch that isn't due
+        # a check, otherwise sat under headings with no counts.
+        self._new_count.configure(text=str(len(shown_new)) if shown_new else "")
+        self._upd_count.configure(text=str(len(shown_upd)) if shown_upd else "")
+
+    def _render_column(self, frame, mods, prev_sig, pool):
+        """Render one column, returning its new content signature.
+
+        Cards are reused rather than rebuilt. Rebuilding identical cards on
+        every check cycle caused a visible flash (including the check that
+        fires as soon as you reopen the window after it's been hidden past an
+        interval), and a resize changes the column on every card's worth of
+        drag: as the new column deepens it takes mods out of the middle of the
+        updated one, which used to rebuild that whole column mid-drag. So each
+        column keeps the cards it has built, keyed by what they show, and only
+        builds the ones it has never had. A card a shrinking window drops is
+        unpacked, not destroyed, while its mod is still in the pool -- dragging
+        back down puts it straight back.
+        """
         if not mods:
-            self._set_placeholder(frame, baseline_text if first_run else empty_text)
+            self._set_placeholder(frame, self._empty_text.get(frame, ""))
+            self._cards[frame] = {}
             return None
         sig = self._column_signature(mods)
-        if sig != prev_sig:
-            self._fill_column(frame, mods)
-        else:
-            # _pil is only consumed by a rebuild -- drop it on the skip path
-            # so stale PIL images don't linger on the mod dicts.
-            for m in mods:
-                m.pop("_pil", None)
+        if sig == prev_sig:
+            return sig
+        if prev_sig is None:
+            # Coming off the placeholder, which isn't a card.
+            for w in frame.winfo_children():
+                w.destroy()
+            self._cards[frame] = {}
+        cards = self._cards[frame]
+
+        pending = []
+        wanted = []
+        for key, mod in zip(sig, mods):
+            if key not in cards:
+                cards[key], needs_fetch = self._build_card(frame, mod)
+                if needs_fetch:
+                    pending.append((cards[key], mod["thumb_url"]))
+            wanted.append(cards[key])
+
+        # Repack only from the first card out of place: a column that grew or
+        # shrank at the bottom touches nothing above that point.
+        packed = frame.pack_slaves()
+        first = next((i for i, (a, b) in enumerate(zip(packed, wanted)) if a is not b),
+                     min(len(packed), len(wanted)))
+        for card in packed[first:]:
+            card.pack_forget()
+        for card in wanted[first:]:
+            card.pack(fill="x", pady=CARD_GAP, padx=(0, 2))
+
+        keep = set(self._column_signature(pool))
+        for key in [k for k in cards if k not in keep]:
+            cards.pop(key).destroy()
+
+        if pending:
+            threading.Thread(target=self._bg_load_thumbs, args=(pending,), daemon=True).start()
         return sig
 
-    def _fill_column(self, frame, mods):
-        # PhotoImage refs are kept per-frame: Tk widgets don't hold a Python
-        # reference to their images, so clearing another column's refs while
-        # skipping its rebuild would blank its thumbnails.
-        photos = self._photos[frame] = []
-        for w in frame.winfo_children():
-            w.destroy()
-        endorsed = set(self.state.get("endorsed", []))
-        for mod in mods:
-            photo = ImageTk.PhotoImage(rounded_photo(mod.pop("_pil")))
-            photos.append(photo)
-            accent = CATEGORY_COLORS.get(mod.get("category"), CATEGORY_COLOR_DEFAULT)
-            mod["endorsed"] = mod.get("link") in endorsed
-            card = ModCard(frame, mod, accent, photo, on_endorse=self._mark_endorsed)
-            card.pack(fill="x", pady=CARD_GAP, padx=(0, 2))
+    def _build_card(self, frame, mod):
+        """(an unpacked card for this mod, whether its thumbnail still has to
+        be fetched). A mod whose thumbnail wasn't loaded ahead of time -- one a
+        taller window just brought into view -- goes up with a placeholder at
+        once and gets its thumbnail on a thread, rather than holding the UI
+        while the Forge answers."""
+        photo, needs_fetch = self._card_photo(mod)
+        accent = CATEGORY_COLORS.get(mod.get("category"), CATEGORY_COLOR_DEFAULT)
+        mod["endorsed"] = mod.get("link") in set(self.state.get("endorsed", []))
+        return ModCard(frame, mod, accent, photo, on_endorse=self._mark_endorsed), needs_fetch
+
+    def _card_photo(self, mod):
+        """(PhotoImage for a mod's card, whether its thumbnail still has to be
+        fetched). A freshly loaded image wins over the cache, so a thumbnail
+        that failed last check and arrived this one actually shows."""
+        url = mod.get("thumb_url")
+        pil = mod.pop("_pil", None)
+        if pil is not None:
+            photo = ImageTk.PhotoImage(rounded_photo(pil))
+            if url:
+                self._thumbs[url] = photo
+            return photo, False
+        if url in self._thumbs:
+            return self._thumbs[url], False
+        return placeholder_photo(mod.get("category")), bool(url)
+
+    def _bg_load_thumbs(self, pending):
+        for card, url in pending:
+            pil = download_thumb(url)
+            if pil:
+                self.root.after(0, self._set_card_thumb, card, url, pil)
+
+    def _set_card_thumb(self, card, url, pil):
+        photo = self._thumbs[url] = ImageTk.PhotoImage(rounded_photo(pil))
+        # The column may have been re-rendered or shrunk while this loaded.
+        if card.winfo_exists():
+            card.set_photo(photo)
 
     @staticmethod
     def _column_signature(mods):

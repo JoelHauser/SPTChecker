@@ -29,7 +29,7 @@ from .utils import parse_dt
 __all__ = [
     "ChangeNotesWindow", "ContextMenu", "FramelessPopup", "LocalScanSettingsWindow",
     "MiniScrollbar", "ModCard", "StatsWindow", "build_scroll_area", "card_pitch",
-    "flat_button", "render_markdown", "section_heading",
+    "flat_button", "placeholder_photo", "render_markdown", "section_heading",
 ]
 
 
@@ -825,18 +825,19 @@ class StatsWindow(FramelessPopup):
             webbrowser.open(fallback_link)
 
 
-_local_scan_placeholder_photos = {}
+_placeholder_photos = {}
 
 
-def _local_scan_placeholder(category=None):
-    """Shared placeholder thumbnail for local-scan result cards -- these mods
-    aren't fetched from the Forge feed, so there's no thumbnail URL to use.
-    Cached per category since placeholder_thumb() now tints its panel with
-    the category's accent color."""
-    if category not in _local_scan_placeholder_photos:
-        _local_scan_placeholder_photos[category] = ImageTk.PhotoImage(
+def placeholder_photo(category=None):
+    """Shared placeholder thumbnail for a card with no image to show yet --
+    local-scan results, whose mods aren't fetched from the Forge feed, and
+    feed cards a taller window adds before their thumbnail arrives. Cached
+    per category since placeholder_thumb() tints its panel with the
+    category's accent color."""
+    if category not in _placeholder_photos:
+        _placeholder_photos[category] = ImageTk.PhotoImage(
             rounded_photo(placeholder_thumb(category)))
-    return _local_scan_placeholder_photos[category]
+    return _placeholder_photos[category]
 
 
 class LocalScanSettingsWindow(FramelessPopup):
@@ -963,7 +964,7 @@ class LocalScanSettingsWindow(FramelessPopup):
             valid = True
         else:
             self._validation_lbl.configure(
-                text="⚠  Couldn't find BepInEx/plugins or SPT/user/mods here", fg=ACCENT_UPD)
+                text="⚠  Couldn't find BepInEx, SPT_Runtime or SPT folders here", fg=ACCENT_UPD)
             valid = False
         self._scan_btn.configure(state="normal" if (valid and self._enabled_var.get()) else "disabled")
 
@@ -1125,7 +1126,7 @@ class LocalScanSettingsWindow(FramelessPopup):
                 accent = CATEGORY_COLORS.get(mod["category"], CATEGORY_COLOR_DEFAULT)
                 pil = r.get("_pil")
                 photo = (ImageTk.PhotoImage(rounded_photo(pil)) if pil
-                          else _local_scan_placeholder(mod["category"]))
+                          else placeholder_photo(mod["category"]))
                 self._photos.append(photo)
                 ModCard(self._results_frame, mod, accent, photo,
                         on_endorse=self._mark_endorsed).pack(
@@ -1419,7 +1420,23 @@ class ModCard(tk.Canvas):
 
         self.bind("<Configure>", self._layout)
 
+    def destroy(self):
+        # Tk doesn't cancel a widget's pending after() callbacks when it is
+        # destroyed. A card hovered while a check refreshed its column kept its
+        # marquee ticking against canvases that no longer existed.
+        for after_id in (self._scroll_id, self._leave_id):
+            if after_id:
+                self.after_cancel(after_id)
+        self._scroll_id = self._leave_id = None
+        super().destroy()
+
     # ── Construction helpers ───────────────────────────────────────────
+
+    def set_photo(self, photo):
+        """Swap in a thumbnail that arrived after the card was built -- cards
+        a taller window adds go up straight away, then fetch their image."""
+        self._photo = photo
+        self._img_lbl.configure(image=photo)
 
     def _add_chip(self, parent, text, color, tint=0.18):
         lbl = chip(parent, text, color, surface=CARD_BG, font_size=7, tint=tint)

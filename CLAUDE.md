@@ -145,9 +145,10 @@ any part of it:
 
 ## Verifying UI changes
 
-There is no automated test suite. UI work is verified with a throwaway
-**offline harness** — rebuild it in a scratch directory rather than committing
-it. The pattern:
+`tests/` covers only the Local Mods scan (`python -m pytest tests`; the
+real-install cases skip unless `SPT41_ROOT` / `SPT40_ROOT` are set). Nothing
+covers the UI. UI work is verified with a throwaway **offline harness** —
+rebuild it in a scratch directory rather than committing it. The pattern:
 
 1. Point `config.DATA_DIR` / `STATE_FILE` / `CACHE_DIR` at a `tempfile.mkdtemp()`
    **before** importing `sptchecker.app`, so the user's real state is untouched.
@@ -194,7 +195,27 @@ Then `python -m PyInstaller --noconfirm SPTModChecker_v<VER>.spec`.
 
 **Update this section as work completes.**
 
-- Version **3.4.6**, working branch **`checkertest`** (not `main`).
+- **3.5.0 is the maintainer's final release** (said at the top of the README
+  and the release notes). Anyone wanting to pick it up is asked to reach out,
+  via a GitHub issue.
+- Version **3.5.0**, working branch **`checkertest`** (not `main`).
+- Second bug pass (2026-10-26, in 3.5.0): thumbnail cache writes are atomic and
+  best-effort (concurrent fetches from the check and resize threads raced);
+  `lookup_by_guid` ignores case; `ModCard.destroy` cancels its marquee/hover
+  timers; hiding to the tray cancels a pending tooltip.
+- **3.5.0 is built and smoke-tested** (2026-10-26): `dist/SPTModChecker_v3.5.0.exe`
+  plus a matching `.zip` (exe alone at the root). It ships the cleanup pass and
+  the deepening columns described under Open Items. Smoke test against a fresh
+  data dir: alive after 25s, `last_check` written 3s after launch, filter
+  resolved to 4.1.6, pools saved 25 deep; registry backed up and restored.
+  Not yet committed, tagged, or uploaded to GitHub or the Forge. Rebuilt
+  twice in place: once for the resize-lag fix (`platform.disable_resize_repaint`
+  plus card reuse in `_render_column`), once to add the Forge's new **UI**
+  category color (`#65cf3e`, hue 104 -- the last wide gap in the wheel).
+- **Category titles come from `GET /api/v0/mod-categories`.** Check it when the
+  Forge adds a category: an unlisted title silently falls back to
+  `CATEGORY_COLOR_DEFAULT`. As of 2026-10-26 every title but "Other" has a color.
+  (Hideout sits 5 degrees from `ACCENT_NEW`, predating the spacing rule.)
 - 3.4.6 (contributed by scrmjt, PR #28) fixed SPT 4.1 server mods scanning as
   nothing: 4.1 replaced the `AbstractModMetadata` base class with the
   `IModMetadata` interface, and ModReader only knew the former. It now reads
@@ -266,15 +287,31 @@ Then `python -m PyInstaller --noconfirm SPTModChecker_v<VER>.spec`.
 - **The Stats popup centres over the header**, putting its ✕ on top of the
   Local Mods button. Harmless since buttons now require a matching press, but
   offsetting popups below the header bar would be tidier.
-- **`feed.get_session()` is dead code** — predates this work, left in case it
-  is a deliberate accessor.
 - **`theme._BUTTON_KINDS["ghost"]`** is never selected; removing it would
   collapse the whole `kind` parameter.
-- **Check Now has lost its hover highlight**: `_bind_tooltip` replaces
-  `PillButton`'s own `<Enter>` binding instead of adding to it (flagged by
-  scrmjt in PR #27, predates it).
+- **Cleanup pass (3.5.0)**, on top of 3.4.6: Check Now's hover
+  highlight is back (`_bind_tooltip` now binds with `add="+"`); a non-numeric
+  `Retry-After` no longer turns a 429 into a silent "not on Forge"; a malformed
+  `/mods/updates` entry is skipped instead of failing the whole scan; the
+  startup entry is compared by full command (no rewrite on every source
+  launch); dead `feed.get_session()` and matcher aliases removed.
+- **Columns deepen with the window (3.5.0).** A check keeps
+  up to `config.DISPLAY_POOL_SIZE` (25) mods per column -- saved as
+  `display_new` / `display_updated` -- and `_on_column_resize` shows as many
+  whole cards as fit, never fewer than `MAX_PER_CATEGORY`. Growing or
+  shrinking appends or trims cards at the bottom without rebuilding the rest.
+  Only on-screen cards get thumbnails up front; cards a resize adds show a
+  placeholder and fetch theirs on a thread (R2 pressure, see below). Toasts,
+  NEW badges and the new-vs-updated dedupe for notifications are still judged
+  at the default 7, so window size never changes what gets announced. Both
+  pools fit one `unpublished_links` batch -- don't raise the pool past half of
+  `PUBLISHED_CHUNK_SIZE` without accepting a second request per check.
 - **~230 MB of stale `build/` folders** for versions 2.1.1 – 3.0.0. Gitignored
   and regenerable, but they sync to OneDrive for no reason.
+- **As of 2026-10-26 `files.sp-mod.com` answers the app's thumbnail requests
+  with 403 (Cloudflare)**, so every card shows its category placeholder. That
+  is the curb predicted below, not a bug; do not try to get around it. Noted
+  as a known issue in the 3.5.0 release notes.
 - **The Forge's R2 image storage is under cost pressure from external
   consumers** (clodan, 2026-09-07 in Discord) and this app is caught in
   whatever rule they use to curb it -- thumbnail fetches may start erroring

@@ -119,10 +119,6 @@ class ForgeRateLimited(Exception):
     """
 
 
-def get_session():
-    return _session
-
-
 def media_request(method, url, **kw):
     """Fetch a non-API asset -- mod thumbnails on files.sp-mod.com -- under
     the non-API budget.
@@ -183,7 +179,32 @@ def _forge_request(method, url, retries=3, **kw):
             return resp
         if attempt == retries:
             raise ForgeRateLimited("sp-mod.com is rate limiting this client")
-        time.sleep(float(resp.headers.get("Retry-After", 2)))
+        time.sleep(_retry_after_seconds(resp))
+
+
+# Ceiling on one Retry-After wait. The API's own penalty is a one minute
+# timeout, so anything longer is a misconfigured header rather than advice --
+# and these waits run on the check and scan threads, which have nothing else
+# to do until they end.
+_RETRY_AFTER_MAX = 90.0
+
+
+def _retry_after_seconds(resp):
+    """How long a 429 asks us to wait, in seconds.
+
+    Retry-After may be an HTTP date rather than a number of seconds. A bare
+    float() raised ValueError on one, which escaped _forge_request and was
+    swallowed by _fetch_mods as an empty result -- so a rate-limited lookup
+    read as "not on the Forge", the exact confusion ForgeRateLimited exists to
+    prevent.
+    """
+    value = resp.headers.get("Retry-After", "")
+    try:
+        seconds = float(value)
+    except ValueError:
+        when = parse_dt(value)
+        seconds = (when - datetime.now(timezone.utc)).total_seconds() if when else 2.0
+    return max(0.0, min(seconds, _RETRY_AFTER_MAX))
 
 
 def strip_html(raw):
@@ -298,7 +319,11 @@ def lookup_by_guid(guid):
     if not guid:
         return None
     mods = _fetch_mods({"filter[guid]": guid})
-    if len(mods) != 1 or mods[0].get("guid") != guid:
+    # Compared without case, as matcher._apply_authoritative_updates already
+    # does: a plugin's own GUID and its Forge registration can differ only in
+    # case, and an exact hit thrown away over that fell through to the much
+    # weaker name search.
+    if len(mods) != 1 or (mods[0].get("guid") or "").casefold() != guid.casefold():
         return None
     return mods[0]
 

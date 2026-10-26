@@ -175,7 +175,10 @@ def download_thumb(url):
 
     if cached.exists():
         try:
-            return Image.open(cached).copy()
+            # Closed straight away: a reader still holding the file blocks
+            # another thread's os.replace of it below.
+            with Image.open(cached) as img:
+                return img.copy()
         except Exception:
             cached.unlink(missing_ok=True)
 
@@ -202,10 +205,22 @@ def download_thumb(url):
         # stays a plain tile and the card can round it against whatever surface
         # it is currently painted.
         canvas = ImageOps.fit(flat, THUMB_SIZE, Image.LANCZOS, centering=(0.5, 0.5))
-        canvas.save(cached, "JPEG", quality=88)
-        return canvas
     except Exception:
         return None
+
+    # Written aside and renamed in, like save_state: the check thread and the
+    # thread loading thumbnails for cards a resize just added can fetch the
+    # same image at once, and saving in place let one read the other's
+    # half-written file. Best effort, and separate from the fetch: losing a
+    # race to cache it -- Windows refuses the rename while another thread has
+    # the file open -- is no reason to throw away an image already in hand.
+    tmp = cached.with_name(f"{cached.stem}.{threading.get_ident()}.tmp")
+    try:
+        canvas.save(tmp, "JPEG", quality=88)
+        os.replace(tmp, cached)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+    return canvas
 
 
 # Traced from the Forge website's own "no thumbnail uploaded" placeholder --
@@ -253,7 +268,6 @@ def placeholder_thumb(category=None):
     anti-aliasing (Tk/raw-bitmap primitives look jagged at this size
     otherwise). Deterministic per category and called per mod-without-
     thumbnail on every check cycle, so render once per category and reuse."""
-    global _placeholder_imgs
     if category in _placeholder_imgs:
         return _placeholder_imgs[category]
     w, h = THUMB_SIZE

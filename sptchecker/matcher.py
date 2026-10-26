@@ -5,6 +5,10 @@ from .config import FUZZY_MATCH_THRESHOLD
 from .feed import (
     ForgeRateLimited, lookup_by_guid, lookup_by_name, lookup_by_query, lookup_updates,
 )
+# Version comparison lives in utils -- the app's own update check needs the
+# same "is this actually newer" rule this does. Why it matters here: a matched
+# mod's Forge listing can be an older re-upload or fork than what's installed,
+# so a plain string inequality would flag a downgrade as an update.
 from .utils import is_newer, pad_versions, parse_version
 
 
@@ -12,24 +16,13 @@ def _normalize_name(name):
     return re.sub(r"[^a-z0-9]+", "", name.lower()) if name else ""
 
 
-
-
-# Version comparison lives in utils -- the app's own update check needs the
-# same "is this actually newer" rule this does. Why it matters here: a matched
-# mod's Forge listing can be an older re-upload or fork than what's installed,
-# so a plain string inequality would flag a downgrade as an update.
-_parse_version = parse_version
-_pad_versions = pad_versions
-_is_newer = is_newer
-
-
 def _versions_equal(v1, v2):
     """Numeric equality, so '1.0.2' and '1.0.2.0' are recognized as the same
     version instead of looking like a client/server version drift."""
-    a, c = _parse_version(v1), _parse_version(v2)
+    a, c = parse_version(v1), parse_version(v2)
     if a is None or c is None:
         return v1 == v2
-    a, c = _pad_versions(a, c)
+    a, c = pad_versions(a, c)
     return a == c
 
 
@@ -223,7 +216,7 @@ def match_one(local_mod):
     available_version = forge.get("version") if forge else None
     update_available = bool(
         forge and available_version and current_version
-        and _is_newer(available_version, current_version)
+        and is_newer(available_version, current_version)
     )
 
     return {
@@ -298,7 +291,7 @@ def _apply_authoritative_updates(results, spt_version):
         forge = r.get("forge")
         guid = forge.get("guid") if forge else None
         version = r.get("current_version")
-        if guid and version and _parse_version(version):
+        if guid and version and parse_version(version):
             pairs.append((guid, version))
             by_key.setdefault((guid.lower(), version), []).append(r)
     if not pairs:
@@ -306,20 +299,33 @@ def _apply_authoritative_updates(results, spt_version):
 
     data = lookup_updates(pairs, spt_version)
 
+    def field(entry, key):
+        return entry.get(key) if isinstance(entry, dict) else None
+
+    def matches(entry):
+        """The results an entry is a verdict on. An entry missing its guid or
+        version is a verdict on nothing -- indexing it directly raised KeyError
+        out of the whole scan over one malformed item, when "no verdict" is
+        exactly what this function already knows how to handle."""
+        guid, version = field(entry, "guid"), field(entry, "version")
+        if not isinstance(guid, str) or not version:
+            return []
+        return by_key.get((guid.lower(), version), [])
+
     for entry in data["updates"]:
-        key = (entry["current_version"]["guid"].lower(), entry["current_version"]["version"])
-        for r in by_key.get(key, []):
+        recommended = field(field(entry, "recommended_version"), "version")
+        if not recommended:
+            continue
+        for r in matches(field(entry, "current_version")):
             r["update_available"] = True
-            r["available_version"] = entry["recommended_version"]["version"]
+            r["available_version"] = recommended
 
     for entry in data["blocked_updates"]:
-        key = (entry["current_version"]["guid"].lower(), entry["current_version"]["version"])
-        for r in by_key.get(key, []):
+        for r in matches(field(entry, "current_version")):
             r["update_available"] = False
 
     for entry in data["up_to_date"] + data["incompatible_with_spt"]:
-        key = (entry["guid"].lower(), entry["version"])
-        for r in by_key.get(key, []):
+        for r in matches(entry):
             r["update_available"] = False
 
 
